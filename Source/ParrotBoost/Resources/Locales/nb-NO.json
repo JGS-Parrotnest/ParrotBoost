@@ -1,0 +1,37 @@
+{
+  "MainWindow": {
+    "Title": "ParrotBoost",
+    "SystemStatus": "SYSTEMSTATUS",
+    "GpuDrivers": "GPU-drivere",
+    "UpToDate": "Oppdatert",
+    "NotUpToDate": "Utdatert",
+    "Specs": "SPESIFIKASJONER",
+    "PredictedBoost": "FORVENTET ØKNING",
+    "OptimizedPerformance": "Optimalisert ytelse",
+    "ReadyToBoost": "Systemet er klart for optimalisering",
+    "Optimized": "Systemet er optimalisert!",
+    "Boost": "BOOST",
+    "SlowDown": "SLOW DOWN"
+  },
+  "SettingsWindow": {
+    "Title": "Innstillinger",
+    "General": "Generelt",
+    "Performance": "Ytelse",
+    "Cleanup": "Opprydding",
+    "Language": "Språk",
+    "AppSetting": "Applikasjonsinnstillinger",
+    "LaunchAtStartup": "Start ved Windows-oppstart",
+    "MinimizeToTray": "Minimer til systemstatusfeltet",
+    "OptimizationSteps": "Optimaliseringstrinn",
+    "DisableServices": "Deaktiver unødvendige tjenester",
+    "ClearMemory": "Tøm minnebuffer",
+    "OptimizeStartup": "Optimaliser oppstartsprogrammer",
+    "DefragRegistry": "Defragmenter registeret",
+    "SystemCleanup": "Systemopprydding",
+    "CleanPrefetch": "Prefetch (C:\\Windows\\Prefetch)",
+    "CleanTemp": "%temp% (Bruker temp)",
+    "CleanWinTemp": "temp (C:\\Windows\\Temp)",
+    "Scan": "Skann etter filer",
+    "CleanNow": "Rydd opp nå"
+  }
+}

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ParrotBoost.Tests/ParrotBoost.Tests.csproj" />
+  <Project Path="ParrotBoost/ParrotBoost.csproj" />
+</Solution>

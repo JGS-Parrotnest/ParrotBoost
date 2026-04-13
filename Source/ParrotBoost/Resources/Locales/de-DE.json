@@ -1,0 +1,37 @@
+{
+  "MainWindow": {
+    "Title": "ParrotBoost",
+    "SystemStatus": "SYSTEMSTATUS",
+    "GpuDrivers": "Grafikkartentreiber",
+    "UpToDate": "Aktuell",
+    "NotUpToDate": "Veraltet",
+    "Specs": "SPEZIFIKATIONEN",
+    "PredictedBoost": "ERWARTETER BOOST",
+    "OptimizedPerformance": "Optimierte Leistung",
+    "ReadyToBoost": "System bereit zum Optimieren",
+    "Optimized": "System ist optimiert!",
+    "Boost": "BOOST",
+    "SlowDown": "SLOW DOWN"
+  },
+  "SettingsWindow": {
+    "Title": "Einstellungen",
+    "General": "Allgemein",
+    "Performance": "Leistung",
+    "Cleanup": "Bereinigung",
+    "Language": "Sprache",
+    "AppSetting": "Anwendungseinstellungen",
+    "LaunchAtStartup": "Beim Windows-Start starten",
+    "MinimizeToTray": "In System-Tray minimieren",
+    "OptimizationSteps": "Optimierungsschritte",
+    "DisableServices": "Unnötige Dienste deaktivieren",
+    "ClearMemory": "Speichercache leeren",
+    "OptimizeStartup": "Autostart-Programme optimieren",
+    "DefragRegistry": "Registry defragmentieren",
+    "SystemCleanup": "Systembereinigung",
+    "CleanPrefetch": "Prefetch (C:\\Windows\\Prefetch)",
+    "CleanTemp": "%temp% (Benutzer-Temp)",
+    "CleanWinTemp": "temp (C:\\Windows\\Temp)",
+    "Scan": "Nach Dateien suchen",
+    "CleanNow": "Jetzt bereinigen"
+  }
+}
