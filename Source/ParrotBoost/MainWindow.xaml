@@ -23,7 +23,7 @@
         RenderOptions.EdgeMode="Unspecified">
 
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="45" GlassFrameThickness="0" CornerRadius="20" NonClientFrameEdges="None"/>
+        <WindowChrome CaptionHeight="45" GlassFrameThickness="0" CornerRadius="0" NonClientFrameEdges="None"/>
     </WindowChrome.WindowChrome>
 
     <Window.Resources>
@@ -142,7 +142,7 @@
     </Window.Resources>
 
     <Grid>
-        <Border x:Name="WindowFrame" Background="{DynamicResource WindowBackground}" CornerRadius="20" SnapsToDevicePixels="True"/>
+        <Border x:Name="WindowFrame" Background="{DynamicResource WindowBackground}" CornerRadius="0" SnapsToDevicePixels="True"/>
         <Grid x:Name="RootGrid" Background="{DynamicResource WindowBackground}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/> <!-- Custom Title Bar -->
@@ -151,7 +151,7 @@
             </Grid.RowDefinitions>
 
             <!-- Custom Title Bar -->
-            <Border Grid.Row="0" Panel.ZIndex="10" Height="45" Background="{DynamicResource HeaderBackground}" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource BorderBrush}" CornerRadius="20,20,0,0" ClipToBounds="True" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+            <Border Grid.Row="0" Panel.ZIndex="10" Height="45" Background="{DynamicResource HeaderBackground}" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource BorderBrush}" CornerRadius="0" ClipToBounds="True" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <Grid>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0">
                         <Image Source="logonbg.png" Width="24" Height="24" RenderOptions.BitmapScalingMode="Fant"/>
@@ -177,7 +177,7 @@
 
             <!-- Main Content Area -->
             <Grid Grid.Row="1">
-                <Grid x:Name="MainDashboard" Margin="20" Visibility="Visible" SnapsToDevicePixels="True">
+                <Grid x:Name="MainDashboard" Margin="8" Visibility="Visible" SnapsToDevicePixels="True">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="1*"/>
                             <ColumnDefinition Width="1*"/>
@@ -256,6 +256,20 @@
                                                FontSize="13" FontWeight="Medium"
                                                TextWrapping="Wrap" TextAlignment="Center"
                                                MaxWidth="200"/>
+                                    <Border x:Name="BoostCpuNoticeBorder"
+                                            Margin="0,12,0,0"
+                                            Padding="10,8"
+                                            Background="{DynamicResource BorderBrush}"
+                                            CornerRadius="8"
+                                            MaxWidth="260"
+                                            Visibility="Collapsed">
+                                        <TextBlock x:Name="BoostCpuNoticeText"
+                                                   Text="{DynamicResource MainWindow.BoostCpuNotice}"
+                                                   Foreground="{DynamicResource TextPrimary}"
+                                                   FontSize="11"
+                                                   TextWrapping="Wrap"
+                                                   TextAlignment="Center"/>
+                                    </Border>
                                 </StackPanel>
                             </Border>
 
@@ -346,6 +360,7 @@
                                             <CheckBox x:Name="OptUsbCheck" Content="Disable USB Power Saving" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
                                             <CheckBox x:Name="OptDeliveryCheck" Content="Disable Delivery Optimization" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
                                             <CheckBox x:Name="OptTickCheck" Content="Disable Dynamic Tick" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
+                                            <CheckBox x:Name="GameModeCheck" Content="{DynamicResource SettingsWindow.GameMode}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
                                         </StackPanel>
                                     </ScrollViewer>
                                 </TabItem>
@@ -356,6 +371,11 @@
                                         <CheckBox x:Name="CleanPrefetchCheck" Content="{DynamicResource SettingsWindow.CleanPrefetch}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
                                         <CheckBox x:Name="CleanTempCheck" Content="{DynamicResource SettingsWindow.CleanTemp}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
                                         <CheckBox x:Name="CleanWinTempCheck" Content="{DynamicResource SettingsWindow.CleanWinTemp}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
+                                        <CheckBox x:Name="CleanUpdateCacheCheck" Content="{DynamicResource SettingsWindow.CleanUpdateCache}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
+                                        <CheckBox x:Name="CleanRecycleBinCheck" Content="{DynamicResource SettingsWindow.CleanRecycleBin}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
+                                        <CheckBox x:Name="CleanComponentStoreCheck" Content="{DynamicResource SettingsWindow.CleanComponentStore}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
+                                        <CheckBox x:Name="CleanMinidumpsCheck" Content="{DynamicResource SettingsWindow.CleanMinidumps}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
+                                        <CheckBox x:Name="OptimizeBootFilesCheck" Content="{DynamicResource SettingsWindow.OptimizeBootFiles}" Foreground="{DynamicResource TextPrimary}" Margin="0,5" FontSize="13"/>
                                         
                                         <Button Content="{DynamicResource SettingsWindow.Scan}" Margin="0,20,0,8" Click="Scan_Click" Background="{DynamicResource ColorPrimaryBrush}" Foreground="White" Width="150" HorizontalAlignment="Left" Padding="15,8"/>
                                         <TextBlock x:Name="CleanupSizeText" Text="Estimated size: 0 MB" Foreground="{DynamicResource TextSecondary}" FontSize="13"/>
@@ -368,12 +388,12 @@
             </Grid>
 
             <!-- Footer -->
-            <Border Grid.Row="2" Background="{DynamicResource HeaderBackground}" Padding="20,12" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource BorderBrush}" CornerRadius="0,0,20,20" ClipToBounds="True">
+            <Border Grid.Row="2" Background="{DynamicResource HeaderBackground}" Padding="20,12" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource BorderBrush}" CornerRadius="0" ClipToBounds="True">
                 <Grid>
                     <TextBlock Text="© 2026 JGS" Foreground="{DynamicResource TextSecondary}" FontSize="12" VerticalAlignment="Center"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                         <Image Source="logonbg.png" Width="18" Height="18" Opacity="0.6"/>
-                        <TextBlock Text="v1.2.6 Stable" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="12" VerticalAlignment="Center"/>
+                        <TextBlock Text="v2.2.8 Stable" Margin="10,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="12" VerticalAlignment="Center"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -391,6 +411,6 @@
                 </StackPanel>
             </Grid>
         </Grid>
-        <Border BorderThickness="1" BorderBrush="{DynamicResource BorderBrush}" CornerRadius="20" Background="Transparent" IsHitTestVisible="False" Panel.ZIndex="30"/>
+        <Border BorderThickness="1" BorderBrush="{DynamicResource BorderBrush}" CornerRadius="0" Background="Transparent" IsHitTestVisible="False" Panel.ZIndex="30"/>
     </Grid>
 </Window>

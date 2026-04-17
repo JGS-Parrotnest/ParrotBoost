@@ -11,35 +11,46 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using Microsoft.Win32;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace ParrotBoost;
 
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+    private const uint RecycleBinNoConfirmation = 0x00000001;
+    private const uint RecycleBinNoProgressUi = 0x00000002;
+    private const uint RecycleBinNoSound = 0x00000004;
+
+    [DllImport("Shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHEmptyRecycleBin(IntPtr hwnd, string? pszRootPath, uint dwFlags);
+
     private bool _isBoostActive = false;
     private UserSettings _settings = new();
     private readonly HardwareTelemetryService _hardwareTelemetry;
     private readonly ParrotBoostRuntimeOptimizer _runtimeOptimizer;
+#if NET9_0_OR_GREATER
+    private readonly System.Threading.Lock _syncRoot = new();
+#else
+    private readonly object _syncRoot = new();
+#endif
     private NotifyIcon? _notifyIcon;
     private string _gpuManufacturer = "Unknown";
+    private string? _driverDownloadUrl;
     private System.Windows.Threading.DispatcherTimer? _performanceTimer;
     private Stack<string> _navigationStack = new();
     private int _cpuTempReadFailures;
     private int _gpuTempReadFailures;
     private DateTime _lastOptimizationLogUtc = DateTime.MinValue;
-    private bool? _lastLoggedBoostState;
-
-    // Smoothed values for Performance Monitor (EMA)
-    private float _smoothedCpuLoad = 0;
-    private float _smoothedGpuLoad = 0;
-    private float _smoothedCpuTemp = 0;
-    private float _smoothedGpuTemp = 0;
-    private const float SmoothingAlpha = 0.2f;
+    private DateTime _lastCriticalToastUtc = DateTime.MinValue;
+    private readonly GameModeService _gameModeService = new();
+    private int _performanceRefreshInFlight;
 
     public bool IsBoostActive
     {
@@ -55,10 +66,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private readonly GpuDriverUpdateService _driverService = new();
+
     public MainWindow()
     {
         InitializeComponent();
         _hardwareTelemetry = new HardwareTelemetryService();
+        _hardwareTelemetry.CriticalTemperatureDetected += OnCriticalTemperatureDetected;
         _runtimeOptimizer = new ParrotBoostRuntimeOptimizer();
         DataContext = this;
         
@@ -67,12 +81,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         
         Loaded += MainWindow_Loaded;
         SizeChanged += (_, _) => UpdateRootClip();
-        LoadHardwareInfo();
-        CheckGpuDrivers();
-        SetupTrayIcon();
         StartLogoFloating();
-        DetectOptimizationState();
-        SetupPerformanceTimer();
         
         // Add global back button support
         PreviewMouseDown += MainWindow_PreviewMouseDown;
@@ -81,6 +90,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         IsManipulationEnabled = true;
         ManipulationStarting += (s, ev) => ev.ManipulationContainer = this;
         ManipulationCompleted += MainWindow_ManipulationCompleted;
+    }
+
+    private async Task CheckForDriverUpdatesAsync()
+    {
+        try
+        {
+            var updates = await _driverService.CheckForUpdatesAsync();
+            var availableUpdates = updates.Where(u => u.UpdateAvailable).ToList();
+
+            if (availableUpdates.Any())
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    string msg = string.Join(", ", availableUpdates.Select(u => u.Manufacturer));
+                    _driverDownloadUrl = availableUpdates[0].DownloadUrl;
+                    GpuDriverBtn.Content = $"Aktualizacja: {msg}";
+                    GpuDriverBtn.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#E67E22")); // Orange for warning
+                    GpuDriverBtn.FontWeight = FontWeights.Bold;
+                    
+                    GpuDriverBtn.ToolTip = "Dostępne nowe sterowniki:\n" + 
+                        string.Join("\n", availableUpdates.Select(u => 
+                        $"{u.Manufacturer}: {u.InstalledVersion} -> {u.LatestVersion}"));
+                });
+            }
+            else
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _driverDownloadUrl = null;
+                    GpuDriverBtn.Content = "Sterowniki aktualne";
+                    GpuDriverBtn.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#2ECC71")); // Green
+                    GpuDriverBtn.FontWeight = FontWeights.SemiBold;
+                    GpuDriverBtn.ToolTip = "Wszystkie sterowniki GPU są w najnowszej wersji.";
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to check for driver updates.");
+        }
     }
 
     private void MainWindow_ManipulationCompleted(object? sender, ManipulationCompletedEventArgs e)
@@ -111,153 +160,78 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void SetupPerformanceTimer()
     {
-        // Load last values and initialize smoothed values
-        _smoothedCpuLoad = _settings.LastCpuLoad;
-        _smoothedGpuLoad = _settings.LastGpuLoad;
-        _smoothedCpuTemp = _settings.LastCpuTemp;
-        _smoothedGpuTemp = _settings.LastGpuTemp;
+        // Load last values
+        float lastCpuLoad = _settings.LastCpuLoad;
+        float lastGpuLoad = _settings.LastGpuLoad;
+        float lastCpuTemp = _settings.LastCpuTemp;
+        float lastGpuTemp = _settings.LastGpuTemp;
 
-        CpuLoadBar.Value = _smoothedCpuLoad;
-        GpuLoadBar.Value = _smoothedGpuLoad;
-        CpuLoadText.Text = $"{(int)_smoothedCpuLoad}%";
-        GpuLoadText.Text = $"{(int)_smoothedGpuLoad}%";
-        CpuTempText.Text = HardwareTelemetryService.FormatTemperature(_smoothedCpuTemp);
-        GpuTempText.Text = HardwareTelemetryService.FormatTemperature(_smoothedGpuTemp);
+        CpuLoadBar.Value = lastCpuLoad;
+        GpuLoadBar.Value = lastGpuLoad;
+        CpuLoadText.Text = $"{(int)lastCpuLoad}%";
+        GpuLoadText.Text = $"{(int)lastGpuLoad}%";
+        CpuTempText.Text = HardwareTelemetryService.FormatTemperature(lastCpuTemp);
+        GpuTempText.Text = HardwareTelemetryService.FormatTemperature(lastGpuTemp);
 
         _performanceTimer = new System.Windows.Threading.DispatcherTimer();
-        _performanceTimer.Interval = TimeSpan.FromMilliseconds(500); // High frequency (~Task Manager)
+        _performanceTimer.Interval = TimeSpan.FromSeconds(1); // Odświeżanie 1Hz zgodnie z wymogami 1:1
         _performanceTimer.Tick += PerformanceTimer_Tick;
         _performanceTimer.Start();
     }
 
-    private void PerformanceTimer_Tick(object? sender, EventArgs e)
+    private async void PerformanceTimer_Tick(object? sender, EventArgs e)
     {
-        Task.Run(() =>
+        if (Interlocked.Exchange(ref _performanceRefreshInFlight, 1) != 0)
         {
-            try
+            return;
+        }
+
+        try
+        {
+            var sample = await Task.Run(() =>
             {
-                float cpuLoad = _hardwareTelemetry.TryGetCpuLoad() ?? GetAccurateCpuLoad();
-                float gpuLoad = GetAccurateGpuLoad();
+                float cpuLoad = _hardwareTelemetry.TryGetCpuLoad() ?? 0;
+                float gpuLoad = _hardwareTelemetry.TryGetGpuLoad() ?? 0;
                 float? cpuTemp = _hardwareTelemetry.TryGetCpuTemperature();
                 float? gpuTemp = _hardwareTelemetry.TryGetGpuTemperature();
 
-                // Validation and real-time monitoring
-                if (cpuLoad < 0 || cpuLoad > 100) Logger.Warn($"Invalid CPU Load detected: {cpuLoad}");
-                if (gpuLoad < 0 || gpuLoad > 100) Logger.Warn($"Invalid GPU Load detected: {gpuLoad}");
+                cpuLoad = Compatibility.Clamp(cpuLoad, 0, 100);
+                gpuLoad = Compatibility.Clamp(gpuLoad, 0, 100);
 
-                cpuLoad = Math.Clamp(cpuLoad, 0, 100);
-                gpuLoad = Math.Clamp(gpuLoad, 0, 100);
+                float displayCpuTemp = cpuTemp ?? 0;
+                float displayGpuTemp = gpuTemp ?? 0;
 
-                // Apply Exponential Moving Average for smoothing
-                _smoothedCpuLoad = (SmoothingAlpha * cpuLoad) + ((1 - SmoothingAlpha) * _smoothedCpuLoad);
-                _smoothedGpuLoad = (SmoothingAlpha * gpuLoad) + ((1 - SmoothingAlpha) * _smoothedGpuLoad);
-                if (cpuTemp is > 0)
-                {
-                    _cpuTempReadFailures = 0;
-                    _smoothedCpuTemp = (SmoothingAlpha * cpuTemp.Value) + ((1 - SmoothingAlpha) * _smoothedCpuTemp);
-                }
-                else if (++_cpuTempReadFailures >= 4)
-                {
-                    _smoothedCpuTemp = 0;
-                }
-                if (gpuTemp is > 0)
-                {
-                    _gpuTempReadFailures = 0;
-                    _smoothedGpuTemp = (SmoothingAlpha * gpuTemp.Value) + ((1 - SmoothingAlpha) * _smoothedGpuTemp);
-                }
-                else if (++_gpuTempReadFailures >= 4)
-                {
-                    _smoothedGpuTemp = 0;
-                }
+                if (cpuTemp.HasValue && cpuTemp.Value > 0) _cpuTempReadFailures = 0;
+                else if (++_cpuTempReadFailures >= 3) displayCpuTemp = 0;
 
-                // Update settings for persistence
-                _settings.LastCpuLoad = _smoothedCpuLoad;
-                _settings.LastGpuLoad = _smoothedGpuLoad;
-                _settings.LastCpuTemp = _smoothedCpuTemp;
-                _settings.LastGpuTemp = _smoothedGpuTemp;
+                if (gpuTemp.HasValue && gpuTemp.Value > 0) _gpuTempReadFailures = 0;
+                else if (++_gpuTempReadFailures >= 3) displayGpuTemp = 0;
 
-                Dispatcher.Invoke(() =>
-                {
-                    CpuLoadBar.Value = _smoothedCpuLoad;
-                    GpuLoadBar.Value = _smoothedGpuLoad;
-                    CpuTempText.Text = HardwareTelemetryService.FormatTemperature(_smoothedCpuTemp);
-                    GpuTempText.Text = HardwareTelemetryService.FormatTemperature(_smoothedGpuTemp);
-                    CpuLoadText.Text = $"{(int)_smoothedCpuLoad}%";
-                    GpuLoadText.Text = $"{(int)_smoothedGpuLoad}%";
-                    
-                    CpuLoadBar.Foreground = GetLoadBrush(_smoothedCpuLoad);
-                    GpuLoadBar.Foreground = GetLoadBrush(_smoothedGpuLoad);
-                });
-            }
-            catch (Exception ex) 
-            { 
-                Logger.Error(ex, "Hardware Monitoring Error");
-            }
-        });
-    }
+                return (cpuLoad, gpuLoad, displayCpuTemp, displayGpuTemp);
+            });
 
-    private float GetAccurateCpuLoad()
-    {
-        try {
-            // Task Manager style CPU load (1:1 accuracy)
-            using (var searcher = new ManagementObjectSearcher("SELECT PercentProcessorTime FROM Win32_PerfFormattedData_PerfOS_Processor WHERE Name='_Total'"))
-            {
-                foreach (var obj in searcher.Get())
-                {
-                    return Math.Clamp(Convert.ToSingle(obj["PercentProcessorTime"]), 0, 100);
-                }
-            }
-        } catch (Exception ex) { Logger.Debug(ex, "CPU Load fallback"); }
-        return _settings.LastCpuLoad;
-    }
+            CpuLoadBar.Value = sample.cpuLoad;
+            GpuLoadBar.Value = sample.gpuLoad;
+            CpuTempText.Text = HardwareTelemetryService.FormatTemperature(sample.displayCpuTemp);
+            GpuTempText.Text = HardwareTelemetryService.FormatTemperature(sample.displayGpuTemp);
+            CpuLoadText.Text = $"{(int)sample.cpuLoad}%";
+            GpuLoadText.Text = $"{(int)sample.gpuLoad}%";
+            CpuLoadBar.Foreground = GetLoadBrush(sample.cpuLoad);
+            GpuLoadBar.Foreground = GetLoadBrush(sample.gpuLoad);
 
-    private float GetAccurateGpuLoad()
-    {
-        try {
-            // Accurate GPU engine utilization (Windows 10+)
-            using (var searcher = new ManagementObjectSearcher("SELECT UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine WHERE Name LIKE '%engtype_3D'"))
-            {
-                float maxUtil = 0;
-                int count = 0;
-                foreach (var obj in searcher.Get())
-                {
-                    float val = Convert.ToSingle(obj["UtilizationPercentage"]);
-                    if (val > maxUtil) maxUtil = val;
-                    count++;
-                }
-                if (count > 0) return Math.Clamp(maxUtil, 0, 100);
-            }
-            
-            // WMI Fallback
-            using (var searcher = new ManagementObjectSearcher("SELECT LoadPercentage FROM Win32_VideoController"))
-            {
-                foreach (var obj in searcher.Get())
-                {
-                    return Math.Clamp(Convert.ToSingle(obj["LoadPercentage"]), 0, 100);
-                }
-            }
-        } catch (Exception ex) { Logger.Debug(ex, "GPU Load fallback"); }
-        return _settings.LastGpuLoad;
-    }
-
-    private float GetAccurateCpuTemp()
-    {
-        try {
-            // Real sensor access (requires high privileges/driver support)
-            using (var searcher = new ManagementObjectSearcher(@"root\WMI", "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"))
-            {
-                foreach (var obj in searcher.Get())
-                {
-                    float tempK = Convert.ToSingle(obj["CurrentTemperature"]);
-                    float tempC = (tempK - 2731.5f) / 10.0f;
-                    // No artificial capping or lowering, 1:1 real sensor data
-                    if (tempC > 0 && tempC < 115) return tempC;
-                }
-            }
-        } catch { }
-        
-        // Fallback to 0 if sensors blocked - we want 1:1 real data only as per requirements
-        return 0;
+            _settings.LastCpuLoad = sample.cpuLoad;
+            _settings.LastGpuLoad = sample.gpuLoad;
+            _settings.LastCpuTemp = sample.displayCpuTemp;
+            _settings.LastGpuTemp = sample.displayGpuTemp;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Hardware Monitoring Error");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _performanceRefreshInFlight, 0);
+        }
     }
 
     private SolidColorBrush GetLoadBrush(float load)
@@ -283,6 +257,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OptUsbCheck.IsChecked = _settings.OptUsb;
         OptDeliveryCheck.IsChecked = _settings.OptDelivery;
         OptTickCheck.IsChecked = _settings.OptTick;
+        GameModeCheck.IsChecked = _settings.EnableGameMode;
+        CleanUpdateCacheCheck.IsChecked = _settings.CleanUpdateCache;
+        CleanRecycleBinCheck.IsChecked = _settings.CleanRecycleBin;
+        CleanComponentStoreCheck.IsChecked = _settings.CleanComponentStore;
+        CleanMinidumpsCheck.IsChecked = _settings.CleanMinidumps;
+        OptimizeBootFilesCheck.IsChecked = _settings.OptimizeBootFiles;
 
         // Set Language ComboBox
         foreach (ComboBoxItem item in LanguageSelector.Items)
@@ -308,6 +288,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _settings.OptUsb = OptUsbCheck.IsChecked ?? true;
         _settings.OptDelivery = OptDeliveryCheck.IsChecked ?? true;
         _settings.OptTick = OptTickCheck.IsChecked ?? true;
+        _settings.EnableGameMode = GameModeCheck.IsChecked ?? false;
+        _settings.CleanUpdateCache = CleanUpdateCacheCheck.IsChecked ?? true;
+        _settings.CleanRecycleBin = CleanRecycleBinCheck.IsChecked ?? true;
+        _settings.CleanComponentStore = CleanComponentStoreCheck.IsChecked ?? false;
+        _settings.CleanMinidumps = CleanMinidumpsCheck.IsChecked ?? false;
+        _settings.OptimizeBootFiles = OptimizeBootFilesCheck.IsChecked ?? false;
         // Theme and Language are updated immediately on change
 
         SettingsManager.Save(_settings);
@@ -443,7 +429,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SplashScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
         SplashScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
 
-        await Task.Delay(2000);
+        var startupTimer = Stopwatch.StartNew();
+        using var backgroundScope = SystemExecutionProfile.TryEnterBackgroundProcessingMode();
+
+        await InitializeDeferredStartupAsync();
+
+        var minimumSplash = TimeSpan.FromMilliseconds(350);
+        if (startupTimer.Elapsed < minimumSplash)
+        {
+            await Task.Delay(minimumSplash - startupTimer.Elapsed);
+        }
 
         var fadeAnim = new DoubleAnimation(0, TimeSpan.FromSeconds(0.5));
         fadeAnim.Completed += (s, _) =>
@@ -452,6 +447,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             SplashOverlay.Visibility = Visibility.Collapsed;
         };
         SplashOverlay.BeginAnimation(OpacityProperty, fadeAnim);
+    }
+
+    private async Task InitializeDeferredStartupAsync()
+    {
+        DetectOptimizationState();
+        SetupPerformanceTimer();
+        SetupTrayIcon();
+
+        await LoadHardwareInfoAsync();
+        await CheckForDriverUpdatesAsync();
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)
@@ -464,8 +469,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _performanceTimer?.Stop();
         _notifyIcon?.Dispose();
+        _hardwareTelemetry.CriticalTemperatureDetected -= OnCriticalTemperatureDetected;
         _hardwareTelemetry.Dispose();
         base.OnClosed(e);
+    }
+
+    private void OnCriticalTemperatureDetected(CriticalTemperatureEvent ev)
+    {
+        // Minimal-spam notification: max 1 toast every 30 seconds.
+        var now = DateTime.UtcNow;
+        if ((now - _lastCriticalToastUtc).TotalSeconds < 30)
+        {
+            return;
+        }
+
+        _lastCriticalToastUtc = now;
+
+        try
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (_notifyIcon != null)
+                {
+                    _notifyIcon.BalloonTipTitle = "ParrotBoost: Critical Temperature";
+                    _notifyIcon.BalloonTipText = ev.Message;
+                    _notifyIcon.ShowBalloonTip(5000);
+                }
+            });
+        }
+        catch
+        {
+        }
     }
     
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
@@ -507,16 +541,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void UpdateRootClip()
     {
-        if (WindowFrame.ActualWidth <= 0 || WindowFrame.ActualHeight <= 0)
-        {
-            return;
-        }
-
-        double cornerRadius = WindowFrame.CornerRadius.TopLeft;
-        RootGrid.Clip = new RectangleGeometry(
-            new Rect(0, 0, WindowFrame.ActualWidth, WindowFrame.ActualHeight),
-            cornerRadius,
-            cornerRadius);
+        // Usunięto zaokrąglanie rogów dla pełnego wypełnienia okna
+        RootGrid.Clip = null;
     }
 
     private void UpdateBoostUI()
@@ -527,6 +553,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             BoostButton.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(231, 76, 60)); // Red
             ProgressStatus.Text = "Boost active. Click STOP to restore.";
             BoostPercentage.Text = "+18%";
+            SetBoostCpuNoticeVisible(true);
         }
         else
         {
@@ -534,24 +561,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             BoostButton.Background = (SolidColorBrush)Resources["ColorPrimaryBrush"];
             ProgressStatus.Text = "System is ready to boost";
             BoostPercentage.Text = "+5-12%";
+            SetBoostCpuNoticeVisible(false);
         }
     }
 
     private void GpuDriverBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (GpuDriverBtn.Content.ToString() == LocalizationManager.Instance.GetString("MainWindow.NotUpToDate"))
+        if (!string.IsNullOrWhiteSpace(_driverDownloadUrl))
         {
-            string url = _gpuManufacturer.ToLower() switch
-            {
-                var m when m.Contains("nvidia") => "https://www.nvidia.com/Download/index.aspx",
-                var m when m.Contains("amd") || m.Contains("radeon") => "https://www.amd.com/en/support",
-                var m when m.Contains("intel") => "https://www.intel.com/content/www/us/en/support/detect.html",
-                _ => "https://www.google.com/search?q=graphics+drivers+update"
-            };
-
             try
             {
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                Process.Start(new ProcessStartInfo(_driverDownloadUrl) { UseShellExecute = true });
             }
             catch (Exception ex)
             {
@@ -560,38 +580,52 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void LoadHardwareInfo()
+    private async Task LoadHardwareInfoAsync()
     {
         try
         {
-            using (var searcher = new ManagementObjectSearcher("select Name from Win32_Processor"))
+            var snapshot = await Task.Run(() =>
             {
-                foreach (var obj in searcher.Get())
-                {
-                    CpuInfo.Text = $"Processor: {obj["Name"]}";
-                    break;
-                }
-            }
+                string? cpuName = null;
+                string? gpuName = null;
+                double? totalRam = null;
 
-            using (var searcher = new ManagementObjectSearcher("select Name from Win32_VideoController"))
-            {
-                foreach (var obj in searcher.Get())
+                using (var searcher = new ManagementObjectSearcher("select Name from Win32_Processor"))
                 {
-                    _gpuManufacturer = obj["Name"]?.ToString() ?? "Unknown";
-                    GpuInfo.Text = $"Graphics: {_gpuManufacturer}";
-                    break;
+                    foreach (var obj in searcher.Get())
+                    {
+                        cpuName = obj["Name"]?.ToString();
+                        break;
+                    }
                 }
-            }
 
-            using (var searcher = new ManagementObjectSearcher("select TotalPhysicalMemory from Win32_ComputerSystem"))
-            {
-                foreach (var obj in searcher.Get())
+                using (var searcher = new ManagementObjectSearcher("select Name from Win32_VideoController"))
                 {
-                    double totalRam = Convert.ToDouble(obj["TotalPhysicalMemory"]) / (1024 * 1024 * 1024);
-                    RamInfo.Text = $"Memory: {Math.Round(totalRam, 1)} GB RAM";
-                    break;
+                    foreach (var obj in searcher.Get())
+                    {
+                        gpuName = obj["Name"]?.ToString();
+                        break;
+                    }
                 }
-            }
+
+                using (var searcher = new ManagementObjectSearcher("select TotalPhysicalMemory from Win32_ComputerSystem"))
+                {
+                    foreach (var obj in searcher.Get())
+                    {
+                        totalRam = Convert.ToDouble(obj["TotalPhysicalMemory"]) / (1024 * 1024 * 1024);
+                        break;
+                    }
+                }
+
+                return (cpuName, gpuName, totalRam);
+            });
+
+            _gpuManufacturer = snapshot.gpuName ?? "Unknown";
+            CpuInfo.Text = $"Processor: {snapshot.cpuName ?? "Unknown"}";
+            GpuInfo.Text = $"Graphics: {_gpuManufacturer}";
+            RamInfo.Text = snapshot.totalRam.HasValue
+                ? $"Memory: {Math.Round(snapshot.totalRam.Value, 1)} GB RAM"
+                : "Memory: Unknown";
         }
         catch (Exception ex)
         {
@@ -599,20 +633,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void CheckGpuDrivers()
+    private void SetBoostCpuNoticeVisible(bool isVisible)
     {
-        // For demonstration, let's say it's outdated if the GPU name contains "Intel" (often the case in VMs or integrated)
-        // In a real scenario, you'd check the driver version against an API.
-        if (_gpuManufacturer.Contains("Intel"))
-        {
-            GpuDriverBtn.Content = LocalizationManager.Instance.GetString("MainWindow.NotUpToDate");
-            GpuDriverBtn.Foreground = System.Windows.Media.Brushes.Red;
-        }
-        else
-        {
-            GpuDriverBtn.Content = LocalizationManager.Instance.GetString("MainWindow.UpToDate");
-            GpuDriverBtn.Foreground = System.Windows.Media.Brushes.Green;
-        }
+        BoostCpuNoticeBorder.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async void BoostButton_Click(object sender, RoutedEventArgs e)
@@ -647,15 +670,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async Task RunBoostSequence()
     {
         BoostButton.IsEnabled = false;
-        
-        string[] statusSteps = { 
-            "Optimizing Visual Effects...", 
-            "Disabling Telemetry & Tasks...", 
-            "Optimizing Network & Updates...", 
-            "Fine-tuning System Timers...", 
+
+        SetBoostCpuNoticeVisible(true);
+        string[] statusSteps = {
+            "Preparing Game Mode...",
+            "Optimizing Visual Effects...",
+            "Optimizing Background Tasks...",
+            "Fine-tuning System Timers...",
             "Configuring Power & USB...",
-            "Cleaning System Logs & Temp...",
-            "Finalizing System Priority..." 
+            "Cleaning Temporary Files...",
+            "Finalizing System Priority..."
         };
 
         foreach (var step in statusSteps)
@@ -665,12 +689,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 switch (step)
                 {
+                    case "Preparing Game Mode...": if (_settings.EnableGameMode) _gameModeService.Activate(); break;
                     case "Optimizing Visual Effects...": if (_settings.OptServices) SetVisualEffects(true); DisableUwpAnimations(true); break;
-                    case "Disabling Telemetry & Tasks...": if (_settings.OptTasks) { OptimizeTaskScheduler(); DisableTelemetry(); } break;
-                    case "Optimizing Network & Updates...": if (_settings.OptDelivery) DisableDeliveryOptimization(); sc_config("wuauserv", "demand"); break;
+                    case "Optimizing Background Tasks...": if (_settings.OptTasks) OptimizeTaskScheduler(); if (_settings.OptDelivery) DisableDeliveryOptimization(); break;
                     case "Fine-tuning System Timers...": if (_settings.OptTick) { SetDynamicTick(false); SetHpet(false); } ClearIconCache(); break;
                     case "Configuring Power & USB...": CreateTurboParrotPowerPlan(); if (_settings.OptUsb) OptimizeUsbPower(true); SetTimerCoalescing(true); break;
-                    case "Cleaning System Logs & Temp...": ClearSystemLogs(); ClearTempFolders(); RestartWmi(); break;
+                    case "Cleaning Temporary Files...": ClearTempFolders(); break;
                     case "Finalizing System Priority...": if (_settings.OptPriority) SetForegroundPriority(true); if (_settings.OptNtfs) DisableNtfsLastAccess(true); break;
                 }
             });
@@ -698,13 +722,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RunCommand("powercfg", $"/setacvalueindex scheme_current sub_processor IDLEDISABLE {(enable ? 0 : 1)}");
     }
 
-    private void ClearSystemLogs()
-    {
-        RunCommand("wevtutil", "cl Application");
-        RunCommand("wevtutil", "cl System");
-        RunCommand("wevtutil", "cl Security");
-    }
-
     private void ClearTempFolders()
     {
         try {
@@ -717,12 +734,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         } catch { }
     }
 
-    private void RestartWmi()
-    {
-        RunCommand("net", "stop winmgmt /y");
-        RunCommand("net", "start winmgmt");
-    }
-
     private async Task RunRestoreSequence()
     {
         BoostButton.IsEnabled = false;
@@ -732,8 +743,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             SetVisualEffects(false);
             DisableUwpAnimations(false);
+            _gameModeService.Restore();
             EnableService("DoSvc");
-            sc_config("wuauserv", "auto");
             SetDynamicTick(true);
             SetHpet(true);
             OptimizeUsbPower(false);
@@ -751,7 +762,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             };
             foreach (var task in tasks)
             {
-                RunCommand("schtasks", $"/change /tn \"{task}\" /disable");
+                RunCommand("schtasks", $"/change /tn \"{task}\" /enable");
             }
 
             RunCommand("powercfg", "-setactive scheme_balanced");
@@ -759,6 +770,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         await Task.Delay(800);
         BoostButton.IsEnabled = true;
+        SetBoostCpuNoticeVisible(false);
     }
 
     // --- Optimization Helpers ---
@@ -776,15 +788,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             RunCommand("schtasks", $"/change /tn \"{task}\" /disable");
         }
-    }
-
-    private void DisableTelemetry()
-    {
-        try {
-            Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DataCollection", "AllowTelemetry", 0, RegistryValueKind.DWord);
-            StopAndDisableService("DiagTrack");
-            StopAndDisableService("dmwappushservice");
-        } catch { }
     }
 
     private void DisableDeliveryOptimization()
@@ -821,11 +824,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RunCommand("ie4uinit.exe", "-ClearIconCache");
     }
 
-    private void sc_config(string service, string startType)
-    {
-        RunCommand("sc", $"config {service} start={startType}");
-    }
-
     // --- Original Logic ---
 
     private void SetVisualEffects(bool optimize)
@@ -848,7 +846,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(5));
                 }
             }
-            RunPowerShell($"Set-Service -Name '{serviceName}' -StartupType Disabled");
+            RunCommand("sc.exe", $"config {serviceName} start= disabled");
         }
         catch { }
     }
@@ -857,7 +855,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
-            RunPowerShell($"Set-Service -Name '{serviceName}' -StartupType Automatic");
+            RunCommand("sc.exe", $"config {serviceName} start= auto");
             using (ServiceController sc = new ServiceController(serviceName))
             {
                 if (sc.Status == ServiceControllerStatus.Stopped)
@@ -897,31 +895,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         catch { }
     }
 
-    private void RunPowerShell(string command)
-    {
-        RunCommand("powershell", $"-Command \"{command}\"");
-    }
-
     // --- Cleanup logic ---
-    private void Scan_Click(object sender, RoutedEventArgs e)
+    private async void Scan_Click(object sender, RoutedEventArgs e)
     {
-        long totalSize = 0;
-        if (CleanPrefetchCheck.IsChecked == true) totalSize += GetDirectorySize(@"C:\Windows\Prefetch");
-        if (CleanTempCheck.IsChecked == true) totalSize += GetDirectorySize(Path.GetTempPath());
-        if (CleanWinTempCheck.IsChecked == true) totalSize += GetDirectorySize(@"C:\Windows\Temp");
+        long totalSize = await Task.Run(() =>
+        {
+            long size = 0;
+            if (CleanPrefetchCheck.IsChecked == true) size += GetDirectorySize(@"C:\Windows\Prefetch");
+            if (CleanTempCheck.IsChecked == true) size += GetDirectorySize(Path.GetTempPath());
+            if (CleanWinTempCheck.IsChecked == true) size += GetDirectorySize(@"C:\Windows\Temp");
+            if (CleanUpdateCacheCheck.IsChecked == true) size += GetDirectorySize(@"C:\Windows\SoftwareDistribution\Download");
+            if (CleanMinidumpsCheck.IsChecked == true) size += GetDirectorySize(@"C:\Windows\Minidump");
+            return size;
+        });
 
         CleanupSizeText.Text = $"Estimated size: {totalSize / (1024 * 1024)} MB";
     }
 
-    private void Clean_Click(object sender, RoutedEventArgs e)
+    private async void Clean_Click(object sender, RoutedEventArgs e)
     {
         if (System.Windows.MessageBox.Show("Are you sure you want to clean selected system folders?", "Confirm Cleanup", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
         {
             try
             {
-                if (CleanPrefetchCheck.IsChecked == true) ClearDirectory(@"C:\Windows\Prefetch");
-                if (CleanTempCheck.IsChecked == true) ClearDirectory(Path.GetTempPath());
-                if (CleanWinTempCheck.IsChecked == true) ClearDirectory(@"C:\Windows\Temp");
+                BoostButton.IsEnabled = false;
+                SetBoostCpuNoticeVisible(true);
+
+                await Task.Run(() =>
+                {
+                    if (CleanPrefetchCheck.IsChecked == true) ClearDirectory(@"C:\Windows\Prefetch");
+                    if (CleanTempCheck.IsChecked == true) ClearDirectory(Path.GetTempPath());
+                    if (CleanWinTempCheck.IsChecked == true) ClearDirectory(@"C:\Windows\Temp");
+                    if (CleanUpdateCacheCheck.IsChecked == true) ClearDirectory(@"C:\Windows\SoftwareDistribution\Download");
+                    if (CleanRecycleBinCheck.IsChecked == true) EmptyRecycleBin();
+                    if (CleanMinidumpsCheck.IsChecked == true) ClearDirectory(@"C:\Windows\Minidump");
+                    if (CleanComponentStoreCheck.IsChecked == true) RunCommand("dism.exe", "/Online /Cleanup-Image /StartComponentCleanup");
+                    if (OptimizeBootFilesCheck.IsChecked == true) RunCommand("defrag.exe", $"{Path.GetPathRoot(Environment.SystemDirectory)} /B");
+                });
                 
                 System.Windows.MessageBox.Show("System folders cleaned successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
                 CleanupSizeText.Text = "Estimated size: 0 MB";
@@ -929,6 +939,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             catch (Exception ex)
             {
                 System.Windows.MessageBox.Show($"Error during cleanup: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                BoostButton.IsEnabled = true;
+                SetBoostCpuNoticeVisible(IsBoostActive);
             }
         }
     }
@@ -949,6 +964,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             foreach (var file in di.EnumerateFiles()) try { file.Delete(); } catch { }
             foreach (var dir in di.EnumerateDirectories()) try { dir.Delete(true); } catch { }
         } catch { }
+    }
+
+    private void EmptyRecycleBin()
+    {
+        try
+        {
+            SHEmptyRecycleBin(IntPtr.Zero, null, RecycleBinNoConfirmation | RecycleBinNoProgressUi | RecycleBinNoSound);
+        }
+        catch
+        {
+        }
     }
 
     private void LanguageSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)

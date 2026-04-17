@@ -22,12 +22,20 @@ public class UserSettings
     public bool OptUsb { get; set; } = true;
     public bool OptDelivery { get; set; } = true;
     public bool OptTick { get; set; } = true;
+    public bool EnableGameMode { get; set; } = false;
 
     // Performance monitor persistence
     public float LastCpuLoad { get; set; } = 0;
     public float LastGpuLoad { get; set; } = 0;
     public float LastCpuTemp { get; set; } = 0;
     public float LastGpuTemp { get; set; } = 0;
+
+    // Cleanup preferences
+    public bool CleanUpdateCache { get; set; } = true;
+    public bool CleanRecycleBin { get; set; } = true;
+    public bool CleanComponentStore { get; set; } = false;
+    public bool CleanMinidumps { get; set; } = false;
+    public bool OptimizeBootFiles { get; set; } = false;
 }
 
 public static class SettingsManager

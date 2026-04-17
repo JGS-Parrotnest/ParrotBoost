@@ -4,15 +4,14 @@
     "frameworks": [
       {
         "name": "Microsoft.NETCore.App",
-        "version": "11.0.0-preview.2.26159.112"
+        "version": "11.0.0-preview.3.26207.106"
       },
       {
         "name": "Microsoft.WindowsDesktop.App",
-        "version": "11.0.0-preview.2.26159.112"
+        "version": "11.0.0-preview.3.26207.106"
       }
     ],
     "configProperties": {
-      "MSTest.EnableParentProcessQuery": true,
       "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": false,
       "CSWINRT_USE_WINDOWS_UI_XAML_PROJECTIONS": false
     }

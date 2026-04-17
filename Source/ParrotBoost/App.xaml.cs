@@ -1,11 +1,11 @@
-using System.Configuration;
-using System.Data;
+using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows;
 using NLog;
 using NLog.Config;
-using System.Xml;
 
 namespace ParrotBoost;
 
@@ -15,30 +15,43 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+#if NET5_0_OR_GREATER
         System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+#endif
         base.OnStartup(e);
         ConfigureNLog();
         _logger = LogManager.GetCurrentClassLogger();
         _logger.Info("Application ParrotBoost (JGS) started (Single-File version).");
+
+        if (e.Args.Contains("--self-diagnostics", StringComparer.OrdinalIgnoreCase))
+        {
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    ParrotBoostRuntimeOptimizer.RunSelfDiagnostics();
+                }
+                catch (Exception ex)
+                {
+                    _logger?.Error(ex, "Self-diagnostics failed.");
+                }
+            });
+        }
     }
 
-    private void ConfigureNLog()
+    private static void ConfigureNLog()
     {
         try
         {
             var assembly = Assembly.GetExecutingAssembly();
             string resourceName = "ParrotBoost.nlog.config";
             
-            using (Stream? stream = assembly.GetManifestResourceStream(resourceName))
+            using Stream? stream = assembly.GetManifestResourceStream(resourceName);
+            if (stream != null)
             {
-                if (stream != null)
-                {
-                    using (var reader = new StreamReader(stream))
-                    {
-                        string xml = reader.ReadToEnd();
-                        LogManager.Configuration = XmlLoggingConfiguration.CreateFromXmlString(xml);
-                    }
-                }
+                using var reader = new StreamReader(stream);
+                string xml = reader.ReadToEnd();
+                LogManager.Configuration = XmlLoggingConfiguration.CreateFromXmlString(xml);
             }
         }
         catch (Exception ex)

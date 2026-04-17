@@ -2,7 +2,8 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net11.0-windows</TargetFramework>
+    <TargetFrameworks>net11.0-windows;net472</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -21,11 +22,15 @@
     <InformationalVersion>1.2.6 Stable</InformationalVersion>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <PublishReadyToRun>true</PublishReadyToRun>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredCompilation>true</TieredCompilation>
+    <TieredPGO>true</TieredPGO>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,11 +41,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.5-pre500" />
     <PackageReference Include="NLog.Config" Version="4.7.15" />
-    <PackageReference Include="NLog.Extensions.Logging" Version="6.1.2" />
-    <PackageReference Include="System.Management" Version="10.0.5" />
-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.5" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.5-pre509" />
+    <PackageReference Include="System.Management" Version="9.0.10" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.0" />
+    <PackageReference Include="System.Net.Http" Version="4.3.4" Condition="'$(TargetFramework)' == 'net472'" />
+    <PackageReference Include="System.Text.Json" Version="9.0.0" Condition="'$(TargetFramework)' == 'net472'" />
   </ItemGroup>
 
 </Project>

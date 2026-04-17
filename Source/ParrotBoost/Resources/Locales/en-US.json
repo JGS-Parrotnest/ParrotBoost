@@ -11,7 +11,8 @@
     "ReadyToBoost": "System is ready to boost",
     "Optimized": "System is optimized!",
     "Boost": "BOOST",
-    "SlowDown": "SLOW DOWN"
+    "SlowDown": "SLOW DOWN",
+    "BoostCpuNotice": "While enabling Boost and cleaning the system, the app may briefly use more CPU - unnecessary files are being removed."
   },
   "SettingsWindow": {
     "Title": "Settings",
@@ -25,12 +26,18 @@
     "OptimizationSteps": "Optimization Steps",
     "DisableServices": "Disable unnecessary services",
     "ClearMemory": "Clear memory cache",
+    "GameMode": "Game Mode (temporarily stop WSearch and Spooler)",
     "OptimizeStartup": "Optimize startup programs",
     "DefragRegistry": "Defragment registry",
     "SystemCleanup": "System Cleanup",
     "CleanPrefetch": "Prefetch (C:\\Windows\\Prefetch)",
     "CleanTemp": "%temp% (User Temp)",
     "CleanWinTemp": "temp (C:\\Windows\\Temp)",
+    "CleanUpdateCache": "Windows Update cache (SoftwareDistribution\\Download)",
+    "CleanRecycleBin": "Empty Recycle Bin",
+    "CleanComponentStore": "WinSxS cleanup (DISM StartComponentCleanup)",
+    "CleanMinidumps": "Remove minidumps (C:\\Windows\\Minidump)",
+    "OptimizeBootFiles": "Optimize boot files and layout (defrag /B)",
     "Scan": "Scan for files",
     "CleanNow": "Clean Now"
   }

@@ -1,0 +1,35 @@
+END USER LICENSE AGREEMENT (EULA) ParrotBoost
+
+This End User License Agreement (hereinafter: the "Agreement") is a legal agreement between you (an individual or legal entity, hereinafter: the "User") and JGS (hereinafter: the "Licensor") regarding the ParrotBoost software (hereinafter: the "Software").
+
+1. SCOPE OF LICENSE
+
+The Licensor grants the User a non-exclusive, non-transferable, and limited license to use the Software in accordance with its intended purpose, solely for personal use or internal business purposes.
+
+2. USAGE RESTRICTIONS
+
+The User agrees not to:
+
+Copy, modify, or create derivative works based on the Software, except as permitted by law.
+Decompile, disassemble, or reverse engineer the Software.
+Rent, lease, sell, or otherwise make the Software available to third parties.
+Remove or alter any copyright or trademark notices of the Licensor.
+3. PRIVACY POLICY
+
+The ParrotBoost Software may collect anonymous technical data related to system performance (CPU, GPU, temperatures) for the purpose of optimizing its operation. This data is not linked to the User’s identity and is not shared with third parties for marketing purposes.
+
+4. DISCLAIMER OF LIABILITY
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY WARRANTIES, EXPRESS OR IMPLIED. THE LICENSOR SHALL NOT BE LIABLE FOR ANY DAMAGES (INCLUDING DIRECT, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES) ARISING FROM THE USE OR INABILITY TO USE THE SOFTWARE.
+
+5. INTELLECTUAL PROPERTY RIGHTS
+
+All rights, title, and interest in and to the Software, including all copyrights and other intellectual property rights related thereto, are the exclusive property of the Licensor and are protected by Polish copyright law and international intellectual property treaties.
+
+6. TERMINATION
+
+This Agreement remains in effect until terminated. The license shall automatically terminate if the User breaches any of the provisions of this Agreement. Upon termination, the User must cease all use of the Software and delete all copies of it.
+
+7. FINAL PROVISIONS
+
+In matters not regulated by this Agreement, the provisions of Polish law shall apply, in particular the Copyright and Related Rights Act and the Civil Code. Any disputes arising from this Agreement shall be resolved by the court having jurisdiction over the registered office of the Licensor.
