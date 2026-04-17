@@ -103,5 +103,5 @@ We are constantly evolving! If you encounter any bugs or have ideas for new feat
 
 
 
-*Maintained by **Hnato**,JGS team and **ThomasWack**.*
+*Maintained by **JGS team and ThomasWack**.*
 
