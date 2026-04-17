@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Image/baner.png" alt="ParrotBoost Banner" width="840" />
+  <img src="Image/Baner.png" alt="ParrotBoost Banner" width="840" />
 
   <br />
 
