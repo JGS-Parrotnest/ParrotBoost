@@ -12,7 +12,6 @@
   <img src="https://img.shields.io/badge/.NET-11-blueviolet?style=for-the-badge" alt=".NET 11" />
   <img src="https://img.shields.io/badge/C%23-15-blue?style=for-the-badge" alt="C# 15" />
 </div>
----
 
 
 
@@ -36,9 +35,6 @@
 
 
 
----
-
-
 
 ## 📊 Performance Impact
 
@@ -49,16 +45,9 @@ See the difference for yourself. Our "Boost" mode aggressively targets system la
 
 
 | Before Optimization | After Optimization |
-
 | :---: | :---: |
-
-| !\[Before](Image/before.png) | !\[After](Image/after.png) |
-
-| \*Standard Windows Bloat\* | \*Pure Performance\* |
-
-
-
----
+| ![Before](Image/before.png) | ![After](Image/after.png) |
+| *Standard Windows Bloat* | *Pure Performance* |
 
 
 
@@ -88,7 +77,6 @@ If you prefer to run the app without installation or want to inspect the logic, 
 
 
 
----
 
 
 
@@ -102,8 +90,6 @@ We know that system optimizers can sometimes look suspicious. **ParrotBoost is N
 
 
 
----
-
 
 
 ## 💬 Feedback
@@ -116,7 +102,6 @@ We are constantly evolving! If you encounter any bugs or have ideas for new feat
 
 
 
----
 
 *Maintained by **Hnato**,JGS team and **ThomasWack**.*
 
