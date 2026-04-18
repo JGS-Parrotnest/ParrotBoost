@@ -24,12 +24,19 @@ internal sealed class ParrotBoostRuntimeOptimizer
 #else
     private readonly object _syncRoot = new();
 #endif
+    private readonly WindowsCompatibilityProfile _compatibilityProfile;
     private readonly ConcurrentDictionary<string, string> _decompressionCache = new(StringComparer.Ordinal);
     private readonly Queue<byte[]> _compressedSnapshots = new();
     private readonly ProcessPriorityClass _baselinePriorityClass;
     private readonly int _baselineMinWorkerThreads;
     private readonly int _baselineMinCompletionThreads;
     private bool _boostProfileApplied;
+    private bool _boostModeEnabled;
+    private bool? _highPerformancePowerPlanActive;
+    private DateTimeOffset _lastWorkingSetTrimUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastPowerPlanSwitchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastSnapshotCapturedUtc = DateTimeOffset.MinValue;
+    private string _latestMonitoringSummary = "No optimization samples captured.";
 
     [DllImport("kernel32.dll")]
     private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
@@ -44,7 +51,13 @@ internal sealed class ParrotBoostRuntimeOptimizer
     private const float CriticalTempThreshold = 95.0f;
 
     public ParrotBoostRuntimeOptimizer()
+        : this(WindowsCompatibilityProfile.Current)
     {
+    }
+
+    internal ParrotBoostRuntimeOptimizer(WindowsCompatibilityProfile compatibilityProfile)
+    {
+        _compatibilityProfile = compatibilityProfile;
         try
         {
             ThreadPool.GetMinThreads(out _baselineMinWorkerThreads, out _baselineMinCompletionThreads);
@@ -140,11 +153,17 @@ internal sealed class ParrotBoostRuntimeOptimizer
         {
             try
             {
+                if (enabled == _boostModeEnabled)
+                {
+                    return;
+                }
+
                 if (enabled)
                 {
                     TuneThreadPool();
                     PrepareManagedMemory();
-                    ConfigurePowerPlan(true);
+                    ConfigurePowerPlan(true, force: true);
+                    _boostModeEnabled = true;
                     _boostProfileApplied = true;
                     return;
                 }
@@ -158,12 +177,29 @@ internal sealed class ParrotBoostRuntimeOptimizer
         }
     }
 
-    private static void OptimizeSystemResources()
+    private void OptimizeSystemResources()
     {
         try
         {
-            // Memory optimization - trim working set
+            if (!_compatibilityProfile.EnableAggressiveWorkingSetTrim)
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastWorkingSetTrimUtc < _compatibilityProfile.ResourceTrimCooldown)
+            {
+                return;
+            }
+
+            using var process = Process.GetCurrentProcess();
+            if (process.WorkingSet64 < 256L * 1024 * 1024)
+            {
+                return;
+            }
+
             SetProcessWorkingSetSize(GetCurrentProcess(), new IntPtr(-1), new IntPtr(-1));
+            _lastWorkingSetTrimUtc = now;
 
             Logger.Trace("System resources optimized (WorkingSet trimmed).");
         }
@@ -173,10 +209,24 @@ internal sealed class ParrotBoostRuntimeOptimizer
         }
     }
 
-    private static void ConfigurePowerPlan(bool highPerformance)
+    private void ConfigurePowerPlan(bool highPerformance, bool force = false)
     {
         try
         {
+            var now = DateTimeOffset.UtcNow;
+            if (!force)
+            {
+                if (_highPerformancePowerPlanActive == highPerformance)
+                {
+                    return;
+                }
+
+                if (now - _lastPowerPlanSwitchUtc < _compatibilityProfile.PowerPlanSwitchCooldown)
+                {
+                    return;
+                }
+            }
+
             // High Performance: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
             // Balanced: 381b4222-f694-41f0-9685-ff5bb260df2e
             string scheme = highPerformance ? "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c" : "381b4222-f694-41f0-9685-ff5bb260df2e";
@@ -186,7 +236,10 @@ internal sealed class ParrotBoostRuntimeOptimizer
                 CreateNoWindow = true,
                 UseShellExecute = false
             };
-            Process.Start(psi)?.WaitForExit();
+            using var process = Process.Start(psi);
+            process?.WaitForExit();
+            _highPerformancePowerPlanActive = highPerformance;
+            _lastPowerPlanSwitchUtc = now;
             Logger.Debug("Power plan set to {0}", highPerformance ? "High Performance" : "Balanced");
         }
         catch (Exception ex)
@@ -203,11 +256,10 @@ internal sealed class ParrotBoostRuntimeOptimizer
             {
                 if (_compressedSnapshots.Count == 0)
                 {
-                    return "No optimization samples captured.";
+                    return _latestMonitoringSummary;
                 }
 
-                byte[] latest = _compressedSnapshots.Last();
-                return DecompressWithCache(latest);
+                return _latestMonitoringSummary;
             }
             catch (Exception ex)
             {
@@ -221,18 +273,26 @@ internal sealed class ParrotBoostRuntimeOptimizer
     {
         try
         {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastSnapshotCapturedUtc < _compatibilityProfile.SnapshotCaptureInterval)
+            {
+                return;
+            }
+
             string json = JsonSerializer.Serialize(snapshot);
             byte[] payload = Compress(json);
 
             lock (_syncRoot)
             {
+                _latestMonitoringSummary = json;
+                _lastSnapshotCapturedUtc = now;
                 _compressedSnapshots.Enqueue(payload);
-                while (_compressedSnapshots.Count > 24)
+                while (_compressedSnapshots.Count > _compatibilityProfile.SnapshotRetentionLimit)
                 {
                     _compressedSnapshots.Dequeue();
                 }
 
-                while (_decompressionCache.Count > 32)
+                while (_decompressionCache.Count > _compatibilityProfile.DecompressionCacheLimit)
                 {
                     string? staleKey = _decompressionCache.Keys.FirstOrDefault();
                     if (staleKey == null || !_decompressionCache.TryRemove(staleKey, out _))
@@ -252,7 +312,7 @@ internal sealed class ParrotBoostRuntimeOptimizer
     {
         try
         {
-            int targetWorkerThreads = Math.Max(1, SystemExecutionProfile.GetPhysicalCoreCount());
+            int targetWorkerThreads = _compatibilityProfile.GetRecommendedMinWorkerThreads(SystemExecutionProfile.GetPhysicalCoreCount());
             ThreadPool.SetMinThreads(targetWorkerThreads, _baselineMinCompletionThreads);
             Logger.Debug("ThreadPool tuned to physical cores: MinWorkerThreads={0}", targetWorkerThreads);
         }
@@ -262,14 +322,21 @@ internal sealed class ParrotBoostRuntimeOptimizer
         }
     }
 
-    private static void PrepareManagedMemory()
+    private void PrepareManagedMemory()
     {
         try
         {
-            GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
-            Logger.Debug("Managed memory prepared (LowLatency, LOH CompactOnce).");
+            GCSettings.LatencyMode = _compatibilityProfile.IsWindows10
+                ? GCLatencyMode.Interactive
+                : GCLatencyMode.SustainedLowLatency;
+
+            if (!_compatibilityProfile.IsWindows10)
+            {
+                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
+            }
+
+            Logger.Debug("Managed memory prepared for {0}.", _compatibilityProfile.IsWindows10 ? "Windows 10 compatibility mode" : "default profile");
         }
         catch (Exception ex)
         {
@@ -283,7 +350,7 @@ internal sealed class ParrotBoostRuntimeOptimizer
         {
             ThreadPool.SetMinThreads(_baselineMinWorkerThreads, _baselineMinCompletionThreads);
             GCSettings.LatencyMode = GCLatencyMode.Interactive;
-            ConfigurePowerPlan(false);
+            ConfigurePowerPlan(false, force: _boostProfileApplied);
 
             try
             {
@@ -299,6 +366,9 @@ internal sealed class ParrotBoostRuntimeOptimizer
                 _compressedSnapshots.Clear();
                 _boostProfileApplied = false;
             }
+
+            _boostModeEnabled = false;
+            _lastWorkingSetTrimUtc = DateTimeOffset.MinValue;
             Logger.Info("Baseline profile restored.");
         }
         catch (Exception ex)
@@ -393,6 +463,7 @@ internal sealed class ParrotBoostRuntimeOptimizer
         try
         {
             ValidateLocalization();
+            ProductionVerificationSuite.RunAll();
             HardwareTelemetryService.RunInternalDiagnostics();
             Logger.Info("Self-Diagnostics PASSED.");
         }

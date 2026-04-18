@@ -171,7 +171,11 @@ internal sealed class TemperatureMonitoringModule : IDisposable
     private bool _disposed;
 
     public TemperatureMonitoringModule()
-        : this(CreateDefaultProvider(), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(60), () => DateTimeOffset.UtcNow)
+        : this(
+            CreateDefaultProvider(),
+            WindowsCompatibilityProfile.Current.TemperaturePollingInterval,
+            TimeSpan.FromSeconds(60),
+            () => DateTimeOffset.UtcNow)
     {
     }
 
@@ -179,12 +183,15 @@ internal sealed class TemperatureMonitoringModule : IDisposable
         ITemperatureProvider provider,
         TimeSpan samplingInterval,
         TimeSpan historyRetention,
-        Func<DateTimeOffset> utcNow)
+        Func<DateTimeOffset> utcNow,
+        bool autoStartPolling = true)
     {
         _provider = provider;
         _historyRetention = historyRetention < TimeSpan.FromSeconds(60) ? TimeSpan.FromSeconds(60) : historyRetention;
         _utcNow = utcNow;
-        _pollTimer = new System.Threading.Timer(_ => PollNow(), null, TimeSpan.Zero, samplingInterval < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : samplingInterval);
+        TimeSpan normalizedInterval = samplingInterval < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : samplingInterval;
+        TimeSpan dueTime = autoStartPolling ? TimeSpan.Zero : Timeout.InfiniteTimeSpan;
+        _pollTimer = new System.Threading.Timer(_ => PollNow(), null, dueTime, normalizedInterval);
     }
 
     public event Action<CriticalTemperatureEvent>? CriticalTemperatureDetected;
@@ -313,6 +320,8 @@ internal sealed class TemperatureMonitoringModule : IDisposable
 
     private void UpdateHistory(IEnumerable<TemperatureSensorReading> readings, DateTimeOffset timestampUtc)
     {
+        var threshold = timestampUtc - _historyRetention;
+
         foreach (var reading in readings)
         {
             if (!_history.TryGetValue(reading.SensorId, out var bucket))
@@ -322,17 +331,31 @@ internal sealed class TemperatureMonitoringModule : IDisposable
             }
 
             bucket.Add(reading.WithTimestamp(timestampUtc));
-            bucket.RemoveAll(item => timestampUtc - item.TimestampUtc > _historyRetention);
+            PruneBucket(bucket, threshold);
         }
 
-        var threshold = timestampUtc - _historyRetention;
         foreach (var key in _history.Keys.ToArray())
         {
-            _history[key].RemoveAll(item => item.TimestampUtc < threshold);
-            if (_history[key].Count == 0)
+            var bucket = _history[key];
+            PruneBucket(bucket, threshold);
+            if (bucket.Count == 0)
             {
                 _history.Remove(key);
             }
+        }
+    }
+
+    private static void PruneBucket(List<TemperatureSensorReading> bucket, DateTimeOffset threshold)
+    {
+        int removeCount = 0;
+        while (removeCount < bucket.Count && bucket[removeCount].TimestampUtc < threshold)
+        {
+            removeCount++;
+        }
+
+        if (removeCount > 0)
+        {
+            bucket.RemoveRange(0, removeCount);
         }
     }
 
@@ -416,7 +439,6 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
     private readonly Computer _computer;
-    private readonly UpdateVisitor _visitor = new();
     private bool _opened;
 
     public WindowsTemperatureProvider()
@@ -433,7 +455,6 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
     public TemperatureProviderReadResult Read(DateTimeOffset timestampUtc)
     {
         EnsureOpen();
-        _computer.Accept(_visitor);
 
         List<TemperatureSensorReading> readings = [];
         foreach (var hardware in _computer.Hardware)
@@ -569,27 +590,6 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
         if (_opened)
         {
             _computer.Close();
-        }
-    }
-
-    private sealed class UpdateVisitor : IVisitor
-    {
-        public void VisitComputer(IComputer computer) => computer.Traverse(this);
-        public void VisitHardware(IHardware hardware)
-        {
-            hardware.Update();
-            foreach (var subHardware in hardware.SubHardware)
-            {
-                subHardware.Accept(this);
-            }
-        }
-
-        public void VisitSensor(ISensor sensor)
-        {
-        }
-
-        public void VisitParameter(IParameter parameter)
-        {
         }
     }
 }

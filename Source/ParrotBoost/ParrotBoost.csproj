@@ -3,6 +3,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFrameworks>net11.0-windows;net472</TargetFrameworks>
+    <DefineConstants>$(DefineConstants);PARROTBOOST_WIN10_COMPAT</DefineConstants>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Threading.Tasks;
 using System.Windows;
 using NLog;
 using NLog.Config;
@@ -19,27 +18,32 @@ public partial class App : System.Windows.Application
         System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
 #endif
         base.OnStartup(e);
-        ConfigureNLog();
+        ConfigureNLog(e.Args);
         _logger = LogManager.GetCurrentClassLogger();
         _logger.Info("Application ParrotBoost (JGS) started (Single-File version).");
 
         if (e.Args.Contains("--self-diagnostics", StringComparer.OrdinalIgnoreCase))
         {
-            _ = Task.Run(() =>
+            try
             {
-                try
-                {
-                    ParrotBoostRuntimeOptimizer.RunSelfDiagnostics();
-                }
-                catch (Exception ex)
-                {
-                    _logger?.Error(ex, "Self-diagnostics failed.");
-                }
-            });
+                ParrotBoostRuntimeOptimizer.RunSelfDiagnostics();
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                _logger?.Error(ex, "Self-diagnostics failed.");
+                Shutdown(1);
+            }
+
+            return;
         }
+
+        var mainWindow = new MainWindow();
+        MainWindow = mainWindow;
+        mainWindow.Show();
     }
 
-    private static void ConfigureNLog()
+    private static void ConfigureNLog(string[]? args = null)
     {
         try
         {
@@ -56,8 +60,21 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show($"Error initializing NLog from embedded resource: {ex.Message}");
+            string message = $"Error initializing NLog from embedded resource: {ex.Message}";
+            if (IsHeadlessDiagnosticsMode(args))
+            {
+                Console.Error.WriteLine(message);
+                return;
+            }
+
+            System.Windows.MessageBox.Show(message);
         }
+    }
+
+    private static bool IsHeadlessDiagnosticsMode(string[]? args)
+    {
+        return (args ?? Environment.GetCommandLineArgs())
+            .Contains("--self-diagnostics", StringComparer.OrdinalIgnoreCase);
     }
 
     protected override void OnExit(ExitEventArgs e)

@@ -11,8 +11,6 @@ namespace ParrotBoost;
 internal sealed class HardwareTelemetryService : IDisposable
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
-    private static readonly TimeSpan PerfCounterCacheDuration = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan WmiCacheDuration = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan GpuFallbackRetention = TimeSpan.FromSeconds(5);
     private const float MaxUncorroboratedGpuJumpCelsius = 25f;
 
@@ -23,6 +21,11 @@ internal sealed class HardwareTelemetryService : IDisposable
 #endif
 
     private TemperatureMonitoringModule? _temperatureModule;
+    private readonly WindowsCompatibilityProfile _compatibilityProfile;
+    private readonly TimeSpan _perfCounterCacheDuration;
+    private readonly TimeSpan _wmiCacheDuration;
+    private readonly TimeSpan _altGpuTemperatureCacheDuration;
+    private readonly TimeSpan _altGpuProbeCooldown;
     private readonly ManagementScope _cimv2Scope = new(@"root\CIMV2");
     private readonly List<PerformanceCounter> _cpuCoreCounters = [];
     private readonly List<PerformanceCounter> _gpuLoadCounters = [];
@@ -34,9 +37,20 @@ internal sealed class HardwareTelemetryService : IDisposable
     private bool _isDisposed;
     private float? _lastAcceptedGpuTemperature;
     private DateTimeOffset _lastAcceptedGpuTemperatureTimestampUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextAlternativeGpuProbeUtc = DateTimeOffset.MinValue;
 
     public HardwareTelemetryService()
+        : this(WindowsCompatibilityProfile.Current)
     {
+    }
+
+    internal HardwareTelemetryService(WindowsCompatibilityProfile compatibilityProfile)
+    {
+        _compatibilityProfile = compatibilityProfile;
+        _perfCounterCacheDuration = compatibilityProfile.PerformanceCounterCacheDuration;
+        _wmiCacheDuration = compatibilityProfile.WmiCacheDuration;
+        _altGpuTemperatureCacheDuration = compatibilityProfile.AlternativeGpuTemperatureCacheDuration;
+        _altGpuProbeCooldown = compatibilityProfile.AlternativeGpuProbeCooldown;
     }
 
     public event Action<CriticalTemperatureEvent> CriticalTemperatureDetected
@@ -52,6 +66,13 @@ internal sealed class HardwareTelemetryService : IDisposable
     }
 
     public TemperatureSnapshot GetCurrentTemperatures() => EnsureTemperatureModule().GetCurrentTemperatures();
+    public TemperatureSnapshot RefreshCurrentTemperatures()
+    {
+        var module = EnsureTemperatureModule();
+        module.PollNow();
+        return module.GetCurrentTemperatures();
+    }
+
     public TemperatureSnapshot getCurrentTemperatures() => GetCurrentTemperatures();
     public IReadOnlyDictionary<string, IReadOnlyList<TemperatureSensorReading>> GetTemperatureHistory() => EnsureTemperatureModule().GetTemperatureHistory();
     public IReadOnlyDictionary<string, IReadOnlyList<TemperatureSensorReading>> getTemperatureHistory() => GetTemperatureHistory();
@@ -102,16 +123,19 @@ internal sealed class HardwareTelemetryService : IDisposable
             _cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
             _cpuCounter.NextValue();
 
-            var cpuCategory = new PerformanceCounterCategory("Processor");
-            foreach (var instance in cpuCategory.GetInstanceNames().Where(i => i != "_Total" && int.TryParse(i, out _)))
+            if (_compatibilityProfile.EnableDetailedCpuCounters)
             {
-                var counter = new PerformanceCounter("Processor", "% Processor Time", instance);
-                counter.NextValue();
-                _cpuCoreCounters.Add(counter);
+                var cpuCategory = new PerformanceCounterCategory("Processor");
+                foreach (var instance in cpuCategory.GetInstanceNames().Where(i => i != "_Total" && int.TryParse(i, out _)))
+                {
+                    var counter = new PerformanceCounter("Processor", "% Processor Time", instance);
+                    counter.NextValue();
+                    _cpuCoreCounters.Add(counter);
+                }
             }
 
             var gpuCategory = new PerformanceCounterCategory("GPU Engine");
-            foreach (var instance in gpuCategory.GetInstanceNames().Where(i => i.Contains("engtype_", StringComparison.OrdinalIgnoreCase)))
+            foreach (var instance in GetPreferredGpuEngineInstances(gpuCategory))
             {
                 var counter = new PerformanceCounter("GPU Engine", "Utilization Percentage", instance);
                 counter.NextValue();
@@ -136,12 +160,12 @@ internal sealed class HardwareTelemetryService : IDisposable
 
     private bool TryGetCachedValue(string key, out float value)
     {
-        return TryGetCachedValue(key, PerfCounterCacheDuration, out value);
+        return TryGetCachedValue(key, _perfCounterCacheDuration, out value);
     }
 
     private bool TryGetCachedValue(string key, TimeSpan cacheDuration, out float value)
     {
-        if (_cache.TryGetValue(key, out var entry) && DateTime.Now - entry.Timestamp < cacheDuration)
+        if (_cache.TryGetValue(key, out var entry) && DateTime.UtcNow - entry.Timestamp < cacheDuration)
         {
             value = entry.Value;
             return true;
@@ -153,7 +177,7 @@ internal sealed class HardwareTelemetryService : IDisposable
 
     private void SetCachedValue(string key, float value)
     {
-        _cache[key] = (value, DateTime.Now);
+        _cache[key] = (value, DateTime.UtcNow);
     }
 
     public float? TryGetCpuClockSpeed()
@@ -171,7 +195,7 @@ internal sealed class HardwareTelemetryService : IDisposable
                 return null;
             }
 
-            if (TryGetCachedValue("CpuClock", WmiCacheDuration, out float cached))
+            if (TryGetCachedValue("CpuClock", _wmiCacheDuration, out float cached))
             {
                 return cached;
             }
@@ -208,6 +232,12 @@ internal sealed class HardwareTelemetryService : IDisposable
             }
 
             EnsureCountersInitialized();
+            if (_cpuCoreCounters.Count == 0)
+            {
+                float? total = TryGetCpuLoad();
+                return total.HasValue ? [total.Value] : [];
+            }
+
             var values = new List<float>(_cpuCoreCounters.Count);
             foreach (var counter in _cpuCoreCounters)
             {
@@ -328,7 +358,7 @@ internal sealed class HardwareTelemetryService : IDisposable
                 return null;
             }
 
-            if (TryGetCachedValue("VramUsage", WmiCacheDuration, out float cached))
+            if (TryGetCachedValue("VramUsage", _wmiCacheDuration, out float cached))
             {
                 return cached;
             }
@@ -520,7 +550,7 @@ internal sealed class HardwareTelemetryService : IDisposable
                 return null;
             }
 
-            if (TryGetCachedValue("GpuAltTemp", WmiCacheDuration, out float cached))
+            if (TryGetCachedValue("GpuAltTemp", _altGpuTemperatureCacheDuration, out float cached))
             {
                 return new TemperatureSensorReading(
                     "windows:nvidia-smi:gpu:0",
@@ -532,6 +562,13 @@ internal sealed class HardwareTelemetryService : IDisposable
                     TemperatureReadStatus.Ok,
                     index: 0);
             }
+
+            if (timestampUtc < _nextAlternativeGpuProbeUtc)
+            {
+                return null;
+            }
+
+            _nextAlternativeGpuProbeUtc = timestampUtc.Add(_altGpuProbeCooldown);
         }
 
         var result = CommandTemperatureReader.TryRun(
@@ -584,6 +621,32 @@ internal sealed class HardwareTelemetryService : IDisposable
             || lowered.Contains("memory");
     }
 
+    private IEnumerable<string> GetPreferredGpuEngineInstances(PerformanceCounterCategory gpuCategory)
+    {
+        var allInstances = gpuCategory
+            .GetInstanceNames()
+            .Where(i => i.Contains("engtype_", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (_compatibilityProfile.EnableDetailedGpuCounters)
+        {
+            return allInstances;
+        }
+
+        var prioritized = allInstances
+            .Where(i => i.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase)
+                || i.Contains("engtype_graphics", StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (prioritized.Length > 0)
+        {
+            return prioritized;
+        }
+
+        return allInstances.Take(8).ToArray();
+    }
+
     public void Dispose()
     {
         lock (_syncRoot)
@@ -613,13 +676,13 @@ internal sealed class HardwareTelemetryService : IDisposable
 
         try
         {
-            var snapshot = service.GetCurrentTemperatures();
-            Logger.Info("[TEST] CPU sensors: {0}, GPU sensors: {1}, errors: {2}", snapshot.CpuSensors.Count, snapshot.GpuSensors.Count, snapshot.Errors.Count);
-            Logger.Info("[TEST] CPU aggregate temp: {0}", FormatTemperature(service.TryGetCpuTemperature()));
-            Logger.Info("[TEST] GPU aggregate temp: {0}", FormatTemperature(service.TryGetGpuTemperature()));
-            Logger.Info("[TEST] CPU load: {0:F1}%", service.TryGetCpuLoad());
-            Logger.Info("[TEST] GPU load: {0:F1}%", service.TryGetGpuLoad());
-            Logger.Info("[TEST] Critical events buffered: {0}", service.GetCriticalEvents().Count);
+            var snapshot = service.RefreshCurrentTemperatures();
+            Logger.Info("[DIAG] CPU sensors: {0}, GPU sensors: {1}, errors: {2}", snapshot.CpuSensors.Count, snapshot.GpuSensors.Count, snapshot.Errors.Count);
+            Logger.Info("[DIAG] CPU aggregate temp: {0}", FormatTemperature(service.TryGetCpuTemperature()));
+            Logger.Info("[DIAG] GPU aggregate temp: {0}", FormatTemperature(service.TryGetGpuTemperature()));
+            Logger.Info("[DIAG] CPU load: {0:F1}%", service.TryGetCpuLoad());
+            Logger.Info("[DIAG] GPU load: {0:F1}%", service.TryGetGpuLoad());
+            Logger.Info("[DIAG] Critical events buffered: {0}", service.GetCriticalEvents().Count);
         }
         catch (Exception ex)
         {
