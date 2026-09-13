@@ -31,6 +31,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     [DllImport("Shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SHEmptyRecycleBin(IntPtr hwnd, string? pszRootPath, uint dwFlags);
 
+    [DllImport("psapi.dll")]
+    private static extern int EmptyWorkingSet(IntPtr hwProc);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+    private const int DwmwaWindowCornerPreference = 33;
+    private const int DwmwcpRound = 2;
+
     private bool _isBoostActive = false;
     private UserSettings _settings = new();
     private readonly HardwareTelemetryService _hardwareTelemetry;
@@ -58,6 +67,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _boostWorkflowStatusActive;
     private int _cleanupOperationInFlight;
     private readonly CancellationTokenSource _startupWorkCancellation = new();
+    private UpdateCheckResult? _latestUpdateResult;
 
     public bool IsBoostActive
     {
@@ -88,15 +98,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         
         Loaded += MainWindow_Loaded;
         SizeChanged += (_, _) => UpdateRootClip();
-        StartLogoFloating();
         
-        // Add global back button support
         PreviewMouseDown += MainWindow_PreviewMouseDown;
         
-        // Touch back support
         IsManipulationEnabled = true;
         ManipulationStarting += (s, ev) => ev.ManipulationContainer = this;
         ManipulationCompleted += MainWindow_ManipulationCompleted;
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        try
+        {
+            var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            if (handle != IntPtr.Zero)
+            {
+                int preference = DwmwcpRound;
+                DwmSetWindowAttribute(handle, DwmwaWindowCornerPreference, ref preference, sizeof(int));
+            }
+        }
+        catch
+        {
+        }
     }
 
     private async Task CheckForDriverUpdatesAsync()
@@ -113,11 +137,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 {
                     string msg = string.Join(", ", availableUpdates.Select(u => u.Manufacturer));
                     _driverDownloadUrl = availableUpdates[0].DownloadUrl;
-                    GpuDriverBtn.Content = $"Aktualizacja: {msg}";
-                    GpuDriverBtn.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#E67E22")); // Orange for warning
+                    GpuDriverBtn.Content = $"Update GPU Drivers: {msg}";
+                    GpuDriverBtn.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#E67E22"));
                     GpuDriverBtn.FontWeight = FontWeights.Bold;
                     
-                    GpuDriverBtn.ToolTip = "Dostępne nowe sterowniki:\n" + 
+                    GpuDriverBtn.ToolTip = "New GPU drivers available:\n" + 
                         string.Join("\n", availableUpdates.Select(u => 
                         $"{u.Manufacturer}: {u.InstalledVersion} -> {u.LatestVersion}"));
                 });
@@ -127,16 +151,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 await Dispatcher.InvokeAsync(() =>
                 {
                     _driverDownloadUrl = null;
-                    GpuDriverBtn.Content = "Sterowniki aktualne";
-                    GpuDriverBtn.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#2ECC71")); // Green
+                    GpuDriverBtn.Content = "GPU drivers up to date";
+                    GpuDriverBtn.Foreground = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#2ECC71"));
                     GpuDriverBtn.FontWeight = FontWeights.SemiBold;
-                    GpuDriverBtn.ToolTip = "Wszystkie sterowniki GPU są w najnowszej wersji.";
+                    GpuDriverBtn.ToolTip = "All GPU drivers are up to date.";
                 });
             }
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Failed to check for driver updates.");
+            await Dispatcher.InvokeAsync(() =>
+            {
+                GpuDriverBtn.Content = "Check GPU driver updates";
+                GpuDriverBtn.ToolTip = "Click to check for GPU driver updates.";
+            });
         }
         finally
         {
@@ -146,7 +175,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void MainWindow_ManipulationCompleted(object? sender, ManipulationCompletedEventArgs e)
     {
-        // Simple back swipe check (from left to right)
         if (e.TotalManipulation.Translation.X > 100 && Math.Abs(e.TotalManipulation.Translation.Y) < 50)
         {
             if (SettingsOverlay.Visibility == Visibility.Visible)
@@ -159,7 +187,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void MainWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
-        // Handle Mouse Back button (XButton1)
         if (e.ChangedButton == MouseButton.XButton1)
         {
             if (SettingsOverlay.Visibility == Visibility.Visible)
@@ -172,7 +199,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void SetupPerformanceTimer()
     {
-        // Load last values
         float lastCpuLoad = _settings.LastCpuLoad;
         float lastGpuLoad = _settings.LastGpuLoad;
         float lastCpuTemp = _settings.LastCpuTemp;
@@ -196,15 +222,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
-            if (_compatibilityProfile.StartupTelemetryDelay > TimeSpan.Zero)
-            {
-                await Task.Delay(_compatibilityProfile.StartupTelemetryDelay, cancellationToken);
-            }
-
             await Dispatcher.InvokeAsync(() =>
             {
                 _performanceTimer?.Start();
-                Logger.Debug("Performance timer started after compatibility delay: {0}", _compatibilityProfile.StartupTelemetryDelay);
+                PerformanceTimer_Tick(null, EventArgs.Empty);
             });
         }
         catch (OperationCanceledException)
@@ -251,12 +272,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return (cpuLoad, gpuLoad, displayCpuTemp, displayGpuTemp, optimizationSnapshot, boostPrediction);
             });
 
-            CpuLoadBar.Value = sample.cpuLoad;
-            GpuLoadBar.Value = sample.gpuLoad;
+            if (WindowState == WindowState.Minimized || !IsVisible)
+            {
+                return;
+            }
+
+            AnimateLoad(CpuLoadBar, CpuLoadText, sample.cpuLoad);
+            AnimateLoad(GpuLoadBar, GpuLoadText, sample.gpuLoad);
             CpuTempText.Text = HardwareTelemetryService.FormatTemperature(sample.displayCpuTemp);
             GpuTempText.Text = HardwareTelemetryService.FormatTemperature(sample.displayGpuTemp);
-            CpuLoadText.Text = $"{(int)sample.cpuLoad}%";
-            GpuLoadText.Text = $"{(int)sample.gpuLoad}%";
             CpuLoadBar.Foreground = GetLoadBrush(sample.cpuLoad);
             GpuLoadBar.Foreground = GetLoadBrush(sample.gpuLoad);
 
@@ -264,26 +288,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _settings.LastGpuLoad = sample.gpuLoad;
             _settings.LastCpuTemp = sample.displayCpuTemp;
             _settings.LastGpuTemp = sample.displayGpuTemp;
+
             _latestBoostPrediction = sample.boostPrediction;
             RefreshBoostPresentation();
 
-            var now = DateTime.UtcNow;
-            if (now - _lastOptimizationLogUtc >= _compatibilityProfile.OptimizationLogInterval)
+            if (DateTime.UtcNow - _lastOptimizationLogUtc > TimeSpan.FromSeconds(30))
             {
-                _lastOptimizationLogUtc = now;
-                Logger.Debug(
-                    "Runtime profile: Windows10Compat={0}, Cpu={1:F1}%, Gpu={2:F1}%, Priority={3}, Workers={4}, CachedPayloads={5}",
-                    _compatibilityProfile.IsWindows10,
+                _lastOptimizationLogUtc = DateTime.UtcNow;
+                Logger.Debug("Telemetry heartbeat: CPU {0:F1}% ({1:F1}C), GPU {2:F1}% ({3:F1}C)",
                     sample.cpuLoad,
+                    sample.displayCpuTemp,
                     sample.gpuLoad,
-                    sample.optimizationSnapshot.PriorityClass,
-                    sample.optimizationSnapshot.WorkerThreads,
-                    sample.optimizationSnapshot.CachedPayloads);
+                    sample.displayGpuTemp);
             }
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Hardware Monitoring Error");
+            Logger.Error(ex, "Error refreshing performance stats.");
         }
         finally
         {
@@ -291,11 +312,63 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private SolidColorBrush GetLoadBrush(float load)
+    private void RefreshBoostPresentation()
     {
-        if (load > 80) return new SolidColorBrush(System.Windows.Media.Color.FromRgb(231, 76, 60)); // Red
-        if (load > 50) return new SolidColorBrush(System.Windows.Media.Color.FromRgb(241, 196, 15)); // Yellow
-        return new SolidColorBrush(System.Windows.Media.Color.FromRgb(46, 204, 113)); // Green
+        if (_boostWorkflowStatusActive)
+        {
+            return;
+        }
+
+        if (IsBoostActive)
+        {
+            BoostPercentage.Text = "ACTIVE";
+            BoostPercentage.FontSize = 28;
+            BoostPredictionDetails.Text = LocalizationManager.Instance.GetString("MainWindow.BoostActive");
+            return;
+        }
+
+        BoostPercentage.FontSize = 36;
+        BoostPercentage.Text = _latestBoostPrediction.RangeLabel;
+        BoostPredictionDetails.Text = _latestBoostPrediction.Details;
+    }
+
+    private void AnimateLoad(System.Windows.Controls.ProgressBar bar, TextBlock textBlock, double targetValue)
+    {
+        double current = bar.Value;
+        var anim = new DoubleAnimation
+        {
+            From = current,
+            To = targetValue,
+            Duration = TimeSpan.FromMilliseconds(450),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        anim.CurrentTimeInvalidated += (s, _) =>
+        {
+            if (bar.Value >= 0)
+            {
+                textBlock.Text = $"{(int)Math.Round(bar.Value)}%";
+            }
+        };
+        bar.BeginAnimation(System.Windows.Controls.Primitives.RangeBase.ValueProperty, anim);
+    }
+
+    private BoostPlanConfiguration CaptureBoostPlanConfiguration()
+    {
+        return new BoostPlanConfiguration(
+            _settings.OptServices,
+            _settings.OptMemory,
+            _settings.OptTasks,
+            _settings.OptNtfs,
+            _settings.OptPriority,
+            _settings.OptUsb,
+            _settings.OptDelivery,
+            _settings.OptTick,
+            _settings.EnableGameMode);
+    }
+
+    private bool ShouldThrottleForWindowsDefender()
+    {
+        return _securityActivityMonitor.IsDefenderBusy(15f, TimeSpan.FromSeconds(2));
     }
 
     private void ApplySettings()
@@ -303,9 +376,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         LocalizationManager.Instance.SetLanguage(_settings.Language);
         ApplyTheme(_settings.IsDarkMode);
         
-        // Bind UI
         LaunchAtStartupCheck.IsChecked = _settings.LaunchAtStartup;
         MinimizeToTrayCheck.IsChecked = _settings.MinimizeToTray;
+        CheckUpdatesOnStartupCheck.IsChecked = _settings.CheckForUpdatesOnStartup;
+
+        OptBlockDeliveryUploadCheck.IsChecked = _settings.OptBlockDeliveryUpload;
+        OptDisableTelemetryTasksCheck.IsChecked = _settings.OptDisableTelemetryTasks;
+        OptDisableAdvertisingIdCheck.IsChecked = _settings.OptDisableAdvertisingId;
+        OptDisableDiagnosticDataCheck.IsChecked = _settings.OptDisableDiagnosticData;
+        OptDisableActivityHistoryCheck.IsChecked = _settings.OptDisableActivityHistory;
+        OptDisableLocationTrackingCheck.IsChecked = _settings.OptDisableLocationTracking;
+        OptDisableFeedbackNotificationsCheck.IsChecked = _settings.OptDisableFeedbackNotifications;
+        OptDisableCopilotCheck.IsChecked = _settings.OptDisableCopilot;
+        OptDisableRecallCheck.IsChecked = _settings.OptDisableRecall;
+        OptDisableClickToDoCheck.IsChecked = _settings.OptDisableClickToDo;
+        OptDisableGenerativeSearchAiCheck.IsChecked = _settings.OptDisableGenerativeSearchAi;
+        OptDisableAppAiFeaturesCheck.IsChecked = _settings.OptDisableAppAiFeatures;
+        OptDisableEdgeAiCheck.IsChecked = _settings.OptDisableEdgeAi;
         OptServicesCheck.IsChecked = _settings.OptServices;
         OptMemoryCheck.IsChecked = _settings.OptMemory;
         OptTasksCheck.IsChecked = _settings.OptTasks;
@@ -315,10 +402,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OptDeliveryCheck.IsChecked = _settings.OptDelivery;
         OptTickCheck.IsChecked = _settings.OptTick;
         GameModeCheck.IsChecked = _settings.EnableGameMode;
+
+        CleanPrefetchCheck.IsChecked = _settings.CleanPrefetch;
+        CleanTempCheck.IsChecked = _settings.CleanTemp;
+        CleanWinTempCheck.IsChecked = _settings.CleanWinTemp;
         CleanUpdateCacheCheck.IsChecked = _settings.CleanUpdateCache;
         CleanRecycleBinCheck.IsChecked = _settings.CleanRecycleBin;
+        CleanBrowserCacheCheck.IsChecked = _settings.CleanBrowserCache;
+        CleanThumbnailsCheck.IsChecked = _settings.CleanThumbnails;
+        CleanErrorReportingCheck.IsChecked = _settings.CleanErrorReporting;
+        CleanSystemLogsCheck.IsChecked = _settings.CleanSystemLogs;
 
-        // Set Language ComboBox
         foreach (ComboBoxItem item in LanguageSelector.Items)
         {
             if (item.Tag?.ToString() == _settings.Language)
@@ -331,9 +425,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void SaveSettings()
     {
-        // Performance monitor persistence is already in _settings
         _settings.LaunchAtStartup = LaunchAtStartupCheck.IsChecked ?? false;
         _settings.MinimizeToTray = MinimizeToTrayCheck.IsChecked ?? true;
+        _settings.CheckForUpdatesOnStartup = CheckUpdatesOnStartupCheck.IsChecked ?? true;
+
+        _settings.OptBlockDeliveryUpload = OptBlockDeliveryUploadCheck.IsChecked ?? true;
+        _settings.OptDisableTelemetryTasks = OptDisableTelemetryTasksCheck.IsChecked ?? true;
+        _settings.OptDisableAdvertisingId = OptDisableAdvertisingIdCheck.IsChecked ?? true;
+        _settings.OptDisableDiagnosticData = OptDisableDiagnosticDataCheck.IsChecked ?? true;
+        _settings.OptDisableActivityHistory = OptDisableActivityHistoryCheck.IsChecked ?? true;
+        _settings.OptDisableLocationTracking = OptDisableLocationTrackingCheck.IsChecked ?? true;
+        _settings.OptDisableFeedbackNotifications = OptDisableFeedbackNotificationsCheck.IsChecked ?? true;
+        _settings.OptDisableCopilot = OptDisableCopilotCheck.IsChecked ?? true;
+        _settings.OptDisableRecall = OptDisableRecallCheck.IsChecked ?? true;
+        _settings.OptDisableClickToDo = OptDisableClickToDoCheck.IsChecked ?? true;
+        _settings.OptDisableGenerativeSearchAi = OptDisableGenerativeSearchAiCheck.IsChecked ?? true;
+        _settings.OptDisableAppAiFeatures = OptDisableAppAiFeaturesCheck.IsChecked ?? true;
+        _settings.OptDisableEdgeAi = OptDisableEdgeAiCheck.IsChecked ?? true;
         _settings.OptServices = OptServicesCheck.IsChecked ?? true;
         _settings.OptMemory = OptMemoryCheck.IsChecked ?? true;
         _settings.OptTasks = OptTasksCheck.IsChecked ?? true;
@@ -343,11 +451,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _settings.OptDelivery = OptDeliveryCheck.IsChecked ?? true;
         _settings.OptTick = OptTickCheck.IsChecked ?? true;
         _settings.EnableGameMode = GameModeCheck.IsChecked ?? false;
+
+        _settings.CleanPrefetch = CleanPrefetchCheck.IsChecked ?? true;
+        _settings.CleanTemp = CleanTempCheck.IsChecked ?? true;
+        _settings.CleanWinTemp = CleanWinTempCheck.IsChecked ?? true;
         _settings.CleanUpdateCache = CleanUpdateCacheCheck.IsChecked ?? true;
         _settings.CleanRecycleBin = CleanRecycleBinCheck.IsChecked ?? true;
-        // Theme and Language are updated immediately on change
+        _settings.CleanBrowserCache = CleanBrowserCacheCheck.IsChecked ?? true;
+        _settings.CleanThumbnails = CleanThumbnailsCheck.IsChecked ?? true;
+        _settings.CleanErrorReporting = CleanErrorReportingCheck.IsChecked ?? true;
+        _settings.CleanSystemLogs = CleanSystemLogsCheck.IsChecked ?? true;
 
         SettingsManager.Save(_settings);
+        ApplyPrivacyTweaks();
+        DisableMicrosoftAiSlop();
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -375,21 +492,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return false;
     }
 
-    private void StartLogoFloating()
-    {
-        if (LogoFloat == null) return;
-        var floatAnim = new DoubleAnimation
-        {
-            From = 0,
-            To = -15,
-            Duration = TimeSpan.FromSeconds(2),
-            AutoReverse = true,
-            RepeatBehavior = RepeatBehavior.Forever,
-            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
-        };
-        LogoFloat.BeginAnimation(TranslateTransform.YProperty, floatAnim);
-    }
-
     private void Theme_Click(object sender, RoutedEventArgs e)
     {
         _settings.IsDarkMode = !_settings.IsDarkMode;
@@ -407,10 +509,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Resources["TextSecondary"] = new SolidColorBrush(System.Windows.Media.Color.FromRgb(160, 170, 180));
             Resources["BorderBrush"] = new SolidColorBrush(System.Windows.Media.Color.FromRgb(45, 50, 55));
             Resources["HeaderBackground"] = new SolidColorBrush(System.Windows.Media.Color.FromRgb(15, 20, 25));
+            Resources["BoostButtonBorderBrush"] = System.Windows.Media.Brushes.White;
             if (ThemeBtn != null) 
             {
                 var textBlock = ThemeBtn.Content as TextBlock;
-                if (textBlock != null) textBlock.Text = ""; // Sun/Light icon
+                if (textBlock != null) textBlock.Text = "";
             }
             if (CloseButton != null) CloseButton.Foreground = System.Windows.Media.Brushes.White;
         }
@@ -422,10 +525,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Resources["TextSecondary"] = new SolidColorBrush(System.Windows.Media.Color.FromRgb(99, 110, 114));
             Resources["BorderBrush"] = new SolidColorBrush(System.Windows.Media.Color.FromRgb(223, 230, 233));
             Resources["HeaderBackground"] = System.Windows.Media.Brushes.White;
+            Resources["BoostButtonBorderBrush"] = new SolidColorBrush(System.Windows.Media.Color.FromRgb(20, 24, 28));
             if (ThemeBtn != null) 
             {
                 var textBlock = ThemeBtn.Content as TextBlock;
-                if (textBlock != null) textBlock.Text = ""; // Moon/Dark icon
+                if (textBlock != null) textBlock.Text = "";
             }
             if (CloseButton != null) CloseButton.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(45, 52, 54));
         }
@@ -452,19 +556,49 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _notifyIcon.Text = "ParrotBoost";
         
         var contextMenu = new ContextMenuStrip();
-        contextMenu.Items.Add("Show", null, (s, e) => { Show(); WindowState = WindowState.Normal; });
+        contextMenu.Items.Add("Show", null, (s, e) =>
+        {
+            Show();
+            WindowState = WindowState.Normal;
+            if (_performanceTimer != null) _performanceTimer.Interval = _compatibilityProfile.TelemetryRefreshInterval;
+            _hardwareTelemetry.SetBackgroundMode(false);
+        });
         contextMenu.Items.Add("Boost ON/OFF", null, async (s, e) => await Dispatcher.InvokeAsync(ToggleBoostAsync));
         contextMenu.Items.Add("-");
         contextMenu.Items.Add("Exit", null, (s, e) => { System.Windows.Application.Current.Shutdown(); });
         
         _notifyIcon.ContextMenuStrip = contextMenu;
-        _notifyIcon.DoubleClick += (s, e) => { Show(); WindowState = WindowState.Normal; };
+        _notifyIcon.DoubleClick += (s, e) =>
+        {
+            Show();
+            WindowState = WindowState.Normal;
+            if (_performanceTimer != null) _performanceTimer.Interval = _compatibilityProfile.TelemetryRefreshInterval;
+            _hardwareTelemetry.SetBackgroundMode(false);
+        };
     }
 
     protected override void OnStateChanged(EventArgs e)
     {
-        if (WindowState == WindowState.Minimized && _settings.MinimizeToTray)
-            Hide();
+        if (WindowState == WindowState.Minimized)
+        {
+            if (_settings.MinimizeToTray)
+            {
+                Hide();
+            }
+            if (_performanceTimer != null)
+            {
+                _performanceTimer.Interval = TimeSpan.FromSeconds(4);
+            }
+            _hardwareTelemetry.SetBackgroundMode(true);
+        }
+        else
+        {
+            if (_performanceTimer != null)
+            {
+                _performanceTimer.Interval = _compatibilityProfile.TelemetryRefreshInterval;
+            }
+            _hardwareTelemetry.SetBackgroundMode(false);
+        }
 
         base.OnStateChanged(e);
     }
@@ -473,25 +607,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         UpdateRootClip();
 
-        var scaleAnim = new DoubleAnimation(1.0, TimeSpan.FromSeconds(1.5))
-        {
-            EasingFunction = new ElasticEase { Oscillations = 2, Springiness = 5 }
-        };
-        SplashScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
-        SplashScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
-
         var startupTimer = Stopwatch.StartNew();
         using var backgroundScope = SystemExecutionProfile.TryEnterBackgroundProcessingMode();
 
         await InitializeDeferredStartupAsync();
 
-        var minimumSplash = TimeSpan.FromMilliseconds(350);
+        var minimumSplash = TimeSpan.FromMilliseconds(300);
         if (startupTimer.Elapsed < minimumSplash)
         {
             await Task.Delay(minimumSplash - startupTimer.Elapsed);
         }
 
-        var fadeAnim = new DoubleAnimation(0, TimeSpan.FromSeconds(0.5));
+        var fadeAnim = new DoubleAnimation(0, TimeSpan.FromSeconds(0.4));
         fadeAnim.Completed += (s, _) =>
         {
             SplashOverlay.IsHitTestVisible = false;
@@ -537,16 +664,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
-            await DelayWithDefenderAwarenessAsync(_compatibilityProfile.HardwareInventoryDelay, cancellationToken);
             if (!cancellationToken.IsCancellationRequested)
             {
                 await LoadHardwareInfoAsync();
             }
 
-            await DelayWithDefenderAwarenessAsync(_compatibilityProfile.DriverUpdateDelay, cancellationToken);
             if (!cancellationToken.IsCancellationRequested)
             {
                 await CheckForDriverUpdatesAsync();
+            }
+
+            if (_settings.CheckForUpdatesOnStartup && !cancellationToken.IsCancellationRequested)
+            {
+                await CheckApplicationUpdatesAsync(manualTrigger: false);
             }
         }
         catch (OperationCanceledException)
@@ -558,259 +688,405 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (delay > TimeSpan.Zero)
         {
+            if (ShouldThrottleForWindowsDefender())
+            {
+                delay += TimeSpan.FromSeconds(1);
+            }
+
             await Task.Delay(delay, cancellationToken);
         }
-
-        while (!cancellationToken.IsCancellationRequested && ShouldThrottleForWindowsDefender())
-        {
-            await Task.Delay(_compatibilityProfile.DefenderProbeInterval, cancellationToken);
-        }
     }
 
-    private bool ShouldThrottleForWindowsDefender()
+    private async Task CheckApplicationUpdatesAsync(bool manualTrigger = false)
     {
-        if (!_compatibilityProfile.SuspendTelemetryDuringDefenderScans)
-        {
-            return false;
-        }
-
-        bool defenderBusy = _securityActivityMonitor.IsDefenderBusy(
-            _compatibilityProfile.DefenderBusyCpuThresholdPercent,
-            _compatibilityProfile.DefenderProbeInterval);
-
-        if (defenderBusy)
-        {
-            Logger.Debug("Windows Defender activity detected. Deferring telemetry-heavy work for Windows 10 compatibility.");
-        }
-
-        return defenderBusy;
-    }
-
-    private void OnCriticalTemperatureDetected(CriticalTemperatureEvent ev)
-    {
-        // Minimal-spam notification: max 1 toast every 30 seconds.
-        var now = DateTime.UtcNow;
-        if ((now - _lastCriticalToastUtc).TotalSeconds < 30)
-        {
-            return;
-        }
-
-        _lastCriticalToastUtc = now;
-
         try
         {
-            Dispatcher.Invoke(() =>
+            var result = await ApplicationUpdateService.CheckForUpdatesAsync();
+            if (result.IsUpdateAvailable)
             {
-                if (_notifyIcon != null)
+                _latestUpdateResult = result;
+                await Dispatcher.InvokeAsync(() =>
                 {
-                    _notifyIcon.BalloonTipTitle = "ParrotBoost: Critical Temperature";
-                    _notifyIcon.BalloonTipText = ev.Message;
-                    _notifyIcon.ShowBalloonTip(5000);
-                }
+                    UpdateNotificationText.Text = $"Dostępna nowa wersja ParrotBoost: v{result.LatestVersion}!";
+                    UpdateNotificationBar.Visibility = Visibility.Visible;
+                });
+            }
+            else if (manualTrigger)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    System.Windows.MessageBox.Show($"Posiadasz najnowszą wersję ParrotBoost (v{ApplicationUpdateService.CurrentVersion}).", "Aktualizacje", MessageBoxButton.OK, MessageBoxImage.Information);
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Update check failed");
+            if (manualTrigger)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    System.Windows.MessageBox.Show($"Nie udało się sprawdzić aktualizacji: {ex.Message}", "Błąd", MessageBoxButton.OK, MessageBoxImage.Warning);
+                });
+            }
+        }
+    }
+
+    private async void UpdateNowBtn_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateNowBtn.IsEnabled = false;
+        UpdateNowBtn.Content = "Pobieranie...";
+        try
+        {
+            var progress = new Progress<int>(percent =>
+            {
+                UpdateNowBtn.Content = $"Pobieranie {percent}%...";
             });
-        }
-        catch
-        {
-        }
-    }
-    
-    private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 
-    private void Settings_Click(object sender, RoutedEventArgs e)
-    {
-        _navigationStack.Push("MainDashboard");
-        SetSettingsOverlayVisible(true);
-    }
-
-    private void Settings_Back_Click(object sender, RoutedEventArgs e)
-    {
-        if (_navigationStack.Count > 0)
-        {
-            string previous = _navigationStack.Pop();
-            if (previous == "MainDashboard")
+            bool success = await ApplicationUpdateService.DownloadAndInstallUpdateAsync(_latestUpdateResult?.DownloadUrl, progress);
+            if (success)
             {
                 SaveSettings();
-                SetSettingsOverlayVisible(false);
+                System.Windows.Application.Current.Shutdown();
             }
-            // Add other screens here if needed
-        }
-        else
-        {
-            // If stack is empty, ensure we are at main settings view
-            // In our case, that's just the overlay being visible.
-            // But usually 'back' from the top of settings should go back to the app.
-            SaveSettings();
-            SetSettingsOverlayVisible(false);
-        }
-    }
-
-    private void SetSettingsOverlayVisible(bool isVisible)
-    {
-        SettingsOverlay.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
-        SettingsOverlay.IsHitTestVisible = isVisible;
-        MainDashboard.Visibility = isVisible ? Visibility.Collapsed : Visibility.Visible;
-    }
-
-    private void UpdateRootClip()
-    {
-        // Usunięto zaokrąglanie rogów dla pełnego wypełnienia okna
-        RootGrid.Clip = null;
-    }
-
-    private void UpdateBoostUI()
-    {
-        if (IsBoostActive)
-        {
-            BoostButton.Content = "STOP";
-            BoostButton.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(231, 76, 60)); // Red
-        }
-        else
-        {
-            BoostButton.Content = "BOOST";
-            BoostButton.Background = (SolidColorBrush)Resources["ColorPrimaryBrush"];
-        }
-
-        RefreshBoostPresentation();
-    }
-
-    private void GpuDriverBtn_Click(object sender, RoutedEventArgs e)
-    {
-        if (!string.IsNullOrWhiteSpace(_driverDownloadUrl))
-        {
-            try
+            else
             {
-                Process.Start(new ProcessStartInfo(_driverDownloadUrl) { UseShellExecute = true });
+                UpdateNowBtn.IsEnabled = true;
+                UpdateNowBtn.Content = "Zaktualizuj";
             }
-            catch (Exception ex)
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Update launch failed");
+            UpdateNowBtn.IsEnabled = true;
+            UpdateNowBtn.Content = "Zaktualizuj";
+        }
+    }
+
+    private void DismissUpdateBtn_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateNotificationBar.Visibility = Visibility.Collapsed;
+    }
+
+    private async void CheckUpdatesNowButton_Click(object sender, RoutedEventArgs e)
+    {
+        CheckUpdatesNowButton.IsEnabled = false;
+        await CheckApplicationUpdatesAsync(manualTrigger: true);
+        CheckUpdatesNowButton.IsEnabled = true;
+    }
+
+    private async void CleanRam_Click(object sender, RoutedEventArgs e)
+    {
+        CleanRamButton.IsEnabled = false;
+        try
+        {
+            await Task.Run(() =>
             {
-                Logger.Error(ex, "Failed to open driver URL");
-            }
+                var processes = Process.GetProcesses();
+                foreach (var process in processes)
+                {
+                    try
+                    {
+                        if (!process.HasExited)
+                        {
+                            EmptyWorkingSet(process.Handle);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        process.Dispose();
+                    }
+                }
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            });
+
+            System.Windows.MessageBox.Show("Pamięć RAM została pomyślnie wyczyszczona!", "ParrotBoost", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to clean RAM");
+        }
+        finally
+        {
+            CleanRamButton.IsEnabled = true;
         }
     }
 
     private async Task LoadHardwareInfoAsync()
     {
-        var stopwatch = Stopwatch.StartNew();
-        try
+        var inventory = await Task.Run(() =>
         {
-            var snapshot = await Task.Run(() =>
+            string cpuName = "Unknown CPU";
+            List<string> dedicatedGpus = [];
+            List<string> integratedGpus = [];
+            string gpuVendor = "Unknown";
+            string ramDetails = "Unknown RAM";
+            List<string> diskDrives = [];
+
+            try
             {
-                string? cpuName = null;
-                string? gpuName = null;
-                double? totalRam = null;
-
-                using (var searcher = new ManagementObjectSearcher("select Name from Win32_Processor"))
+                using var searcher = new ManagementObjectSearcher("SELECT Name FROM Win32_Processor");
+                foreach (var obj in searcher.Get())
                 {
-                    foreach (var obj in searcher.Get())
+                    string rawName = obj["Name"]?.ToString()?.Trim() ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(rawName))
                     {
-                        cpuName = obj["Name"]?.ToString();
+                        cpuName = rawName;
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Error reading CPU info.");
+            }
+
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Name, AdapterCompatibility FROM Win32_VideoController");
+                foreach (var obj in searcher.Get())
+                {
+                    string name = obj["Name"]?.ToString()?.Trim() ?? string.Empty;
+                    string compat = obj["AdapterCompatibility"]?.ToString()?.Trim() ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    if (name.Contains("VirtualBox", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("Basic Display", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("RDP", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("TeamViewer", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("AnyDesk", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    bool isIntegrated = name.Contains("Intel", StringComparison.OrdinalIgnoreCase) &&
+                        (name.Contains("HD Graphics", StringComparison.OrdinalIgnoreCase) ||
+                         name.Contains("UHD Graphics", StringComparison.OrdinalIgnoreCase) ||
+                         name.Contains("Iris", StringComparison.OrdinalIgnoreCase));
+
+                    if (!isIntegrated && (name.Contains("Radeon Graphics", StringComparison.OrdinalIgnoreCase) ||
+                                          name.Contains("Vega", StringComparison.OrdinalIgnoreCase) ||
+                                          name.Contains("APU", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        isIntegrated = true;
+                    }
+
+                    if (isIntegrated)
+                    {
+                        if (!integratedGpus.Contains(name))
+                        {
+                            integratedGpus.Add(name);
+                        }
+                    }
+                    else
+                    {
+                        if (!dedicatedGpus.Contains(name))
+                        {
+                            dedicatedGpus.Add(name);
+                            if (gpuVendor == "Unknown" && !string.IsNullOrWhiteSpace(compat))
+                            {
+                                gpuVendor = compat;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Error reading GPU info.");
+            }
+
+            try
+            {
+                ulong totalBytes = 0;
+                uint maxSpeed = 0;
+                string ddr = string.Empty;
+
+                using var searcher = new ManagementObjectSearcher("SELECT Capacity, Speed, ConfiguredClockSpeed, SMBIOSMemoryType, PartNumber FROM Win32_PhysicalMemory");
+                foreach (var obj in searcher.Get())
+                {
+                    if (obj["Capacity"] != null)
+                    {
+                        totalBytes += Convert.ToUInt64(obj["Capacity"]);
+                    }
+
+                    uint speed = 0;
+                    if (obj["ConfiguredClockSpeed"] != null)
+                    {
+                        speed = Convert.ToUInt32(obj["ConfiguredClockSpeed"]);
+                    }
+                    else if (obj["Speed"] != null)
+                    {
+                        speed = Convert.ToUInt32(obj["Speed"]);
+                    }
+
+                    if (speed > maxSpeed)
+                    {
+                        maxSpeed = speed;
+                    }
+
+                    if (string.IsNullOrEmpty(ddr))
+                    {
+                        uint smbiosType = obj["SMBIOSMemoryType"] != null ? Convert.ToUInt32(obj["SMBIOSMemoryType"]) : 0;
+                        ddr = smbiosType switch
+                        {
+                            20 => "DDR",
+                            21 => "DDR2",
+                            24 => "DDR3",
+                            26 => "DDR4",
+                            30 => "LPDDR4",
+                            34 => "DDR5",
+                            35 => "LPDDR5",
+                            _ => string.Empty
+                        };
+
+                        if (string.IsNullOrEmpty(ddr))
+                        {
+                            string part = obj["PartNumber"]?.ToString() ?? string.Empty;
+                            if (part.Contains("DDR5", StringComparison.OrdinalIgnoreCase)) ddr = "DDR5";
+                            else if (part.Contains("DDR4", StringComparison.OrdinalIgnoreCase)) ddr = "DDR4";
+                            else if (part.Contains("DDR3", StringComparison.OrdinalIgnoreCase)) ddr = "DDR3";
+                        }
+                    }
+                }
+
+                if (totalBytes == 0)
+                {
+                    using var csSearcher = new ManagementObjectSearcher("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem");
+                    foreach (var obj in csSearcher.Get())
+                    {
+                        if (obj["TotalPhysicalMemory"] != null)
+                        {
+                            totalBytes = Convert.ToUInt64(obj["TotalPhysicalMemory"]);
+                        }
                         break;
                     }
                 }
 
-                using (var searcher = new ManagementObjectSearcher("select Name from Win32_VideoController"))
+                double gb = Math.Round((double)totalBytes / (1024.0 * 1024.0 * 1024.0));
+                if (string.IsNullOrEmpty(ddr) && maxSpeed > 0)
                 {
-                    foreach (var obj in searcher.Get())
-                    {
-                        gpuName = obj["Name"]?.ToString();
-                        break;
-                    }
+                    if (maxSpeed >= 4400) ddr = "DDR5";
+                    else if (maxSpeed >= 2133) ddr = "DDR4";
+                    else if (maxSpeed >= 800) ddr = "DDR3";
                 }
 
-                using (var searcher = new ManagementObjectSearcher("select TotalPhysicalMemory from Win32_ComputerSystem"))
+                string speedSuffix = maxSpeed > 0 ? $" ({maxSpeed} MHz)" : string.Empty;
+                string ddrPart = !string.IsNullOrEmpty(ddr) ? $" {ddr}" : string.Empty;
+                ramDetails = $"{gb} GB{ddrPart}{speedSuffix}";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Error reading RAM info.");
+            }
+
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Model, Size FROM Win32_DiskDrive");
+                foreach (var obj in searcher.Get())
                 {
-                    foreach (var obj in searcher.Get())
+                    string model = obj["Model"]?.ToString()?.Trim() ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(model)) continue;
+
+                    string sizeLabel = string.Empty;
+                    if (obj["Size"] != null)
                     {
-                        totalRam = Convert.ToDouble(obj["TotalPhysicalMemory"]) / (1024 * 1024 * 1024);
-                        break;
+                        ulong bytes = Convert.ToUInt64(obj["Size"]);
+                        double gb = bytes / (1000.0 * 1000.0 * 1000.0);
+                        if (gb >= 900)
+                        {
+                            sizeLabel = $"{Math.Round(gb / 1000.0, 0)} TB";
+                        }
+                        else if (gb >= 1)
+                        {
+                            sizeLabel = $"{Math.Round(gb, 0)} GB";
+                        }
+                    }
+
+                    string entry = !string.IsNullOrEmpty(sizeLabel) ? $"{model} ({sizeLabel})" : model;
+                    if (!diskDrives.Contains(entry))
+                    {
+                        diskDrives.Add(entry);
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Error reading Disk info.");
+            }
 
-                return (cpuName, gpuName, totalRam);
-            });
+            return (cpuName, dedicatedGpus, integratedGpus, ramDetails, gpuVendor, diskDrives);
+        });
 
-            _gpuManufacturer = snapshot.gpuName ?? "Unknown";
-            CpuInfo.Text = $"Processor: {snapshot.cpuName ?? "Unknown"}";
-            GpuInfo.Text = $"Graphics: {_gpuManufacturer}";
-            RamInfo.Text = snapshot.totalRam.HasValue
-                ? $"Memory: {Math.Round(snapshot.totalRam.Value, 1)} GB RAM"
-                : "Memory: Unknown";
-        }
-        catch (Exception ex)
+        CpuInfo.Text = $"CPU: {inventory.cpuName}";
+
+        if (inventory.dedicatedGpus.Count > 0)
         {
-            Logger.Error(ex, "Hardware info error");
+            GpuInfo.Text = $"GPU: {string.Join(", ", inventory.dedicatedGpus)}";
+            if (inventory.integratedGpus.Count > 0)
+            {
+                IgpuInfo.Text = $"iGPU: {string.Join(", ", inventory.integratedGpus)}";
+                IgpuInfo.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                IgpuInfo.Visibility = Visibility.Collapsed;
+            }
         }
-        finally
+        else if (inventory.integratedGpus.Count > 0)
         {
-            Logger.Debug("Hardware inventory completed in {0} ms", stopwatch.ElapsedMilliseconds);
+            GpuInfo.Text = $"GPU: {string.Join(", ", inventory.integratedGpus)}";
+            IgpuInfo.Visibility = Visibility.Collapsed;
         }
+        else
+        {
+            GpuInfo.Text = "GPU: Unknown";
+            IgpuInfo.Visibility = Visibility.Collapsed;
+        }
+
+        RamInfo.Text = $"RAM: {inventory.ramDetails}";
+
+        if (inventory.diskDrives.Count == 1)
+        {
+            DiskInfo.Text = $"Disk: {inventory.diskDrives[0]}";
+            DiskInfo.Visibility = Visibility.Visible;
+        }
+        else if (inventory.diskDrives.Count > 1)
+        {
+            DiskInfo.Text = string.Join(Environment.NewLine, inventory.diskDrives.Select((d, idx) => $"Disk {idx + 1}: {d}"));
+            DiskInfo.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            DiskInfo.Visibility = Visibility.Collapsed;
+        }
+
+        _gpuManufacturer = inventory.gpuVendor;
     }
 
-    private BoostPlanConfiguration CaptureBoostPlanConfiguration()
+    private void UpdateBoostUI()
     {
-        return new BoostPlanConfiguration(
-            OptServicesCheck.IsChecked ?? _settings.OptServices,
-            OptMemoryCheck.IsChecked ?? _settings.OptMemory,
-            OptTasksCheck.IsChecked ?? _settings.OptTasks,
-            OptNtfsCheck.IsChecked ?? _settings.OptNtfs,
-            OptPriorityCheck.IsChecked ?? _settings.OptPriority,
-            OptUsbCheck.IsChecked ?? _settings.OptUsb,
-            OptDeliveryCheck.IsChecked ?? _settings.OptDelivery,
-            OptTickCheck.IsChecked ?? _settings.OptTick,
-            GameModeCheck.IsChecked ?? _settings.EnableGameMode);
-    }
-
-    private void RefreshBoostPresentation()
-    {
-        BoostPercentage.Text = _latestBoostPrediction.RangeLabel;
-        BoostPredictionDetails.Text = GetBoostOutcomeText();
-
-        if (_boostWorkflowStatusActive)
+        if (_isBoostActive)
         {
-            return;
+            BoostButton.Content = LocalizationManager.Instance.GetString("MainWindow.SlowDown");
+            BoostButton.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#E74C3C"));
+            ProgressStatus.Text = LocalizationManager.Instance.GetString("MainWindow.Optimized");
+        }
+        else
+        {
+            BoostButton.Content = LocalizationManager.Instance.GetString("MainWindow.Boost");
+            BoostButton.Background = (System.Windows.Media.Brush)FindResource("ColorPrimaryBrush");
+            ProgressStatus.Text = LocalizationManager.Instance.GetString("MainWindow.ReadyToBoost");
         }
 
-        ProgressStatus.Text = GetBoostActivityText();
-    }
-
-    private string GetBoostActivityText()
-    {
-        if (IsBoostActive)
-        {
-            return "Boost active";
-        }
-
-        if (_latestBoostPrediction.MaximumGainPercent <= 0)
-        {
-            return "Boost on standby";
-        }
-
-        return "Boost ready";
-    }
-
-    private string GetBoostOutcomeText()
-    {
-        if (_latestBoostPrediction.MinimumGainPercent < 0 || _latestBoostPrediction.MaximumGainPercent < 0)
-        {
-            return "Analyzing system";
-        }
-
-        if (_latestBoostPrediction.MaximumGainPercent <= 0)
-        {
-            return "No meaningful gain";
-        }
-
-        if (_latestBoostPrediction.MaximumGainPercent <= 3)
-        {
-            return "Small gain likely";
-        }
-
-        if (_latestBoostPrediction.MaximumGainPercent <= 8)
-        {
-            return "Moderate gain likely";
-        }
-
-        return "Strong gain likely";
+        RefreshBoostPresentation();
     }
 
     private async void BoostButton_Click(object sender, RoutedEventArgs e)
@@ -866,14 +1142,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 {
                     case "Game mode": if (_settings.EnableGameMode) _gameModeService.Activate(); break;
                     case "Visuals": if (_settings.OptServices) SetVisualEffects(true); DisableUwpAnimations(true); break;
-                    case "Tasks": if (_settings.OptTasks) OptimizeTaskScheduler(); if (_settings.OptDelivery) DisableDeliveryOptimization(); break;
+                    case "Tasks":
+                        if (_settings.OptTasks) OptimizeTaskScheduler();
+                        if (_settings.OptDelivery || _settings.OptBlockDeliveryUpload) DisableDeliveryOptimization();
+                        if (_settings.OptDisableTelemetryTasks) DisableTelemetryScheduledTasks();
+                        DisableMicrosoftAiSlop();
+                        ApplyPrivacyTweaks();
+                        break;
                     case "Timers": if (_settings.OptTick) { SetDynamicTick(false); SetHpet(false); } ClearIconCache(); break;
                     case "Power": CreateTurboParrotPowerPlan(); if (_settings.OptUsb) OptimizeUsbPower(true); SetTimerCoalescing(true); break;
                     case "Cleanup": ClearTempFolders(); break;
                     case "Priority": if (_settings.OptPriority) SetForegroundPriority(true); if (_settings.OptNtfs) DisableNtfsLastAccess(true); break;
                 }
             });
-            await Task.Delay(400);
+            await Task.Delay(300);
         }
 
         _boostWorkflowStatusActive = false;
@@ -914,45 +1196,39 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async Task RunRestoreSequence()
     {
         BoostButton.IsEnabled = false;
-        _boostWorkflowStatusActive = true;
-        ProgressStatus.Text = "Restoring boost";
-        
-        await Task.Run(() => 
+        ProgressStatus.Text = LocalizationManager.Instance.GetString("Boost.Restoring");
+
+        await Task.Run(() =>
         {
+            if (_settings.EnableGameMode) _gameModeService.Restore();
+            RestoreDefaultPowerPlan();
+            RestoreServices();
             SetVisualEffects(false);
             DisableUwpAnimations(false);
-            _gameModeService.Restore();
-            EnableService("DoSvc");
+            DisableNtfsLastAccess(false);
+            SetForegroundPriority(false);
+            OptimizeUsbPower(false);
             SetDynamicTick(true);
             SetHpet(true);
-            OptimizeUsbPower(false);
             SetTimerCoalescing(false);
-            SetForegroundPriority(false);
-            DisableNtfsLastAccess(false);
-            
-            // Re-enable tasks
-            string[] tasks = {
-                @"\Microsoft\Windows\Customer Experience Improvement Program\Consolidator",
-                @"\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip",
-                @"\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
-                @"\Microsoft\Windows\Application Experience\ProgramDataUpdater",
-                @"\Microsoft\Windows\Autochk\Proxy"
-            };
-            foreach (var task in tasks)
-            {
-                RunCommand("schtasks", $"/change /tn \"{task}\" /enable");
-            }
-
-            RunCommand("powercfg", "-setactive scheme_balanced");
+            RestoreMicrosoftAiSlop();
         });
 
-        await Task.Delay(800);
-        _boostWorkflowStatusActive = false;
         BoostButton.IsEnabled = true;
         RefreshBoostPresentation();
     }
 
-    // --- Optimization Helpers ---
+    private void CreateTurboParrotPowerPlan()
+    {
+        RunCommand("powercfg", "-duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61");
+        RunCommand("powercfg", "-setactive e9a42b02-d5df-448d-aa00-03f14749eb61");
+    }
+
+    private void RestoreDefaultPowerPlan()
+    {
+        RunCommand("powercfg", "-restoredefaultschemes");
+        RunCommand("powercfg", "-setactive 381b4222-f694-41f0-9685-ff5bb260df2e");
+    }
 
     private void OptimizeTaskScheduler()
     {
@@ -969,8 +1245,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void DisableTelemetryScheduledTasks()
+    {
+        string[] tasks = {
+            @"\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
+            @"\Microsoft\Windows\Application Experience\ProgramDataUpdater",
+            @"\Microsoft\Windows\Customer Experience Improvement Program\Consolidator",
+            @"\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip"
+        };
+        foreach (var task in tasks)
+        {
+            RunCommand("schtasks", $"/change /tn \"{task}\" /disable");
+        }
+    }
+
     private void DisableDeliveryOptimization()
     {
+        try
+        {
+            RegistryHelper.SetDword(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization", "DODownloadMode", 0);
+            RegistryHelper.SetDword(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization", "DOMaxUploadBandwidth", 0);
+            RegistryHelper.SetDword(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config", "DODownloadMode", 0);
+        }
+        catch
+        {
+        }
+
         StopAndDisableService("DoSvc");
     }
 
@@ -1003,8 +1303,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RunCommand("ie4uinit.exe", "-ClearIconCache");
     }
 
-    // --- Original Logic ---
-
     private void SetVisualEffects(bool optimize)
     {
         try {
@@ -1019,62 +1317,392 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             using (ServiceController sc = new ServiceController(serviceName))
             {
-                if (sc.Status != ServiceControllerStatus.Stopped)
+                if (sc.Status == ServiceControllerStatus.Running && sc.CanStop)
                 {
                     sc.Stop();
                     sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(5));
                 }
             }
-            RunCommand("sc.exe", $"config {serviceName} start= disabled");
+
+            RunCommand("sc", $"config \"{serviceName}\" start=disabled");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"Failed to stop/disable service {serviceName}");
+        }
     }
 
-    private void EnableService(string serviceName)
+    private void RestoreServices()
+    {
+        string[] services = { "DiagTrack", "dmwappushservice", "SysMain", "WSearch", "DoSvc" };
+        foreach (var svc in services)
+        {
+            try
+            {
+                RunCommand("sc", $"config \"{svc}\" start=auto");
+                using (ServiceController sc = new ServiceController(svc))
+                {
+                    if (sc.Status != ServiceControllerStatus.Running)
+                    {
+                        sc.Start();
+                    }
+                }
+            }
+            catch {}
+        }
+    }
+
+    private void RunCommand(string command, string args)
     {
         try
         {
-            RunCommand("sc.exe", $"config {serviceName} start= auto");
-            using (ServiceController sc = new ServiceController(serviceName))
+            var psi = new ProcessStartInfo
             {
-                if (sc.Status == ServiceControllerStatus.Stopped)
+                FileName = command,
+                Arguments = args,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            using var p = Process.Start(psi);
+            p?.WaitForExit(5000);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"Error running {command} {args}");
+        }
+    }
+
+    private void OnCriticalTemperatureDetected(CriticalTemperatureEvent criticalEvent)
+    {
+        Dispatcher.InvokeAsync(() =>
+        {
+            if (DateTime.UtcNow - _lastCriticalToastUtc < TimeSpan.FromSeconds(10))
+            {
+                return;
+            }
+
+            _lastCriticalToastUtc = DateTime.UtcNow;
+            _notifyIcon?.ShowBalloonTip(3000, "ParrotBoost - Ostrzeżenie", criticalEvent.Message, ToolTipIcon.Warning);
+        });
+    }
+
+    private SolidColorBrush GetLoadBrush(float load)
+    {
+        if (load < 50) return (SolidColorBrush)FindResource("ColorPrimaryBrush");
+        if (load < 80) return new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#F1C40F"));
+        return new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#E74C3C"));
+    }
+
+    private void Settings_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateTo("SettingsOverlay");
+    }
+
+    private void NavigateTo(string overlayName)
+    {
+        _navigationStack.Push(overlayName);
+        SettingsOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+        SettingsOverlay.Opacity = 1;
+        SettingsOverlay.Visibility = Visibility.Visible;
+        SettingsOverlay.IsHitTestVisible = true;
+        MainDashboard.IsHitTestVisible = false;
+    }
+
+    private void Settings_Back_Click(object sender, RoutedEventArgs e)
+    {
+        SaveSettings();
+        if (_navigationStack.Count > 0)
+        {
+            _navigationStack.Pop();
+        }
+
+        SettingsOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+        SettingsOverlay.Opacity = 0;
+        SettingsOverlay.Visibility = Visibility.Collapsed;
+        SettingsOverlay.IsHitTestVisible = false;
+        MainDashboard.IsHitTestVisible = true;
+    }
+
+    private void Minimize_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+    }
+
+    private void GpuDriverBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (TryLaunchVendorGpuApp(_gpuManufacturer))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(_driverDownloadUrl))
+        {
+            Process.Start(new ProcessStartInfo(_driverDownloadUrl) { UseShellExecute = true });
+        }
+        else
+        {
+            string searchUrl = _gpuManufacturer.ToLower() switch
+            {
+                var m when m.Contains("nvidia") => "https://www.nvidia.com/Download/index.aspx",
+                var m when m.Contains("amd") || m.Contains("advanced micro") => "https://www.amd.com/en/support",
+                var m when m.Contains("intel") => "https://www.intel.com/content/www/us/en/download-center/home.html",
+                _ => "https://www.google.com/search?q=" + Uri.EscapeDataString($"{_gpuManufacturer} graphics drivers update")
+            };
+            Process.Start(new ProcessStartInfo(searchUrl) { UseShellExecute = true });
+        }
+    }
+
+    private static bool TryLaunchVendorGpuApp(string manufacturer)
+    {
+        string lower = (manufacturer ?? string.Empty).ToLowerInvariant();
+        try
+        {
+            if (lower.Contains("nvidia"))
+            {
+                string[] candidates = [
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"NVIDIA Corporation\NVIDIA App\CEF\NVIDIA App.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"NVIDIA Corporation\NVIDIA App\CEF\NVIDIA App.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"NVIDIA Corporation\NVIDIA GeForce Experience\NVIDIA GeForce Experience.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"NVIDIA Corporation\NVIDIA GeForce Experience\NVIDIA GeForce Experience.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "nvcplui.exe")
+                ];
+
+                foreach (var exe in candidates)
                 {
-                    sc.Start();
+                    if (File.Exists(exe))
+                    {
+                        Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+                        return true;
+                    }
+                }
+
+                try
+                {
+                    Process.Start(new ProcessStartInfo("nvidia-app://") { UseShellExecute = true });
+                    return true;
+                }
+                catch
+                {
+                }
+            }
+            else if (lower.Contains("amd") || lower.Contains("advanced micro") || lower.Contains("radeon"))
+            {
+                string[] candidates = [
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"AMD\CNext\CNext\RadeonSoftware.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"AMD\Performance Profile Client\AmdPpc.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"AMD\CNext\CNext\RadeonSoftware.exe")
+                ];
+
+                foreach (var exe in candidates)
+                {
+                    if (File.Exists(exe))
+                    {
+                        Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+                        return true;
+                    }
+                }
+
+                try
+                {
+                    Process.Start(new ProcessStartInfo("amd-software://") { UseShellExecute = true });
+                    return true;
+                }
+                catch
+                {
+                }
+            }
+            else if (lower.Contains("intel") || lower.Contains("arc"))
+            {
+                string[] candidates = [
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Intel\Intel Arc Control\ArcControl.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Intel\Arc Control\ArcControl.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Intel\Graphics Command Center\IGCC.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Intel\Graphics Command Center\IGCC.exe")
+                ];
+
+                foreach (var exe in candidates)
+                {
+                    if (File.Exists(exe))
+                    {
+                        Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+                        return true;
+                    }
+                }
+
+                try
+                {
+                    Process.Start(new ProcessStartInfo("igcc:") { UseShellExecute = true });
+                    return true;
+                }
+                catch
+                {
                 }
             }
         }
-        catch { }
+        catch
+        {
+        }
+
+        return false;
     }
 
-    private void CreateTurboParrotPowerPlan()
-    {
-        try {
-            string guid = "e9a42b02-d5df-448d-aa00-03f14749eb61";
-            string newGuid = "77777777-7777-7777-7777-777777777777";
-            RunCommand("powercfg", $"-duplicatescheme {guid} {newGuid}");
-            RunCommand("powercfg", $"-changename {newGuid} \"Turbo Parrot\"");
-            RunCommand("powercfg", $"-setactive {newGuid}");
-        } catch {}
-    }
-
-    private void RunCommand(string filename, string arguments)
+    private void DisableMicrosoftAiSlop()
     {
         try
         {
-            ProcessStartInfo psi = new ProcessStartInfo
+            if (_settings.OptDisableCopilot)
             {
-                FileName = filename,
-                Arguments = arguments,
-                WindowStyle = ProcessWindowStyle.Hidden,
-                CreateNoWindow = true,
-                UseShellExecute = false
-            };
-            Process.Start(psi)?.WaitForExit();
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "ShowCopilotButton", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsCopilot", "TurnOffWindowsCopilot", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot", "TurnOffWindowsCopilot", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Copilot\BingChat", "IsCopilotAvailable", 0, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableRecall)
+            {
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsAI", "DisableAIDataAnalysis", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "DisableAIDataAnalysis", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "AllowRecall", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "DisableRecall", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsAI", "SnapshotAnalysisDisabled", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "SnapshotAnalysisDisabled", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "AllowUserActivityAnalysis", 0, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableClickToDo)
+            {
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ClickToDo", "Enabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "DisableClickToDo", 1, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableGenerativeSearchAi)
+            {
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Search", "BingSearchEnabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Search", "DeviceHistoryEnabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\SearchSettings", "IsDynamicSearchBoxEnabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "DisableWebSearch", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "ConnectedSearchUseWeb", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "AllowCloudSearch", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "DisableSearchBoxSuggestions", 1, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableAppAiFeatures)
+            {
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Paint", "DisableCocreator", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Paint", "DisableCocreator", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Photos", "DisableGenerativeErase", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Photos", "DisableSuperResolution", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Photos", "DisableAI", 1, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableEdgeAi)
+            {
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "HubsSidebarEnabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "CopilotCDPEnabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "ComposeInlineEnabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "EdgeEntSearchPageContext", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Edge", "HubsSidebarEnabled", 0, RegistryValueKind.DWord);
+            }
         }
-        catch { }
+        catch
+        {
+        }
     }
 
-    // --- Cleanup logic ---
+    private void ApplyPrivacyTweaks()
+    {
+        try
+        {
+            if (_settings.OptDisableAdvertisingId)
+            {
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo", "Enabled", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo", "DisabledByGroupPolicy", 1, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableDiagnosticData)
+            {
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DataCollection", "AllowTelemetry", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DataCollection", "MaxTelemetryAllowed", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Diagnostics\DiagTrack", "ShowDiagData", 0, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableActivityHistory)
+            {
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\System", "EnableActivityFeed", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\System", "PublishUserActivities", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\System", "UploadUserActivities", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SubscribedContent-338393Enabled", 0, RegistryValueKind.DWord);
+            }
+
+            if (_settings.OptDisableLocationTracking)
+            {
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors", "DisableLocation", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors", "DisableLocationScripting", 1, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location", "Value", "Deny", RegistryValueKind.String);
+            }
+
+            if (_settings.OptDisableFeedbackNotifications)
+            {
+                Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Siuf\Rules", "NumberOfSIUFInPeriod", 0, RegistryValueKind.DWord);
+                Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\DataCollection", "DoNotShowFeedbackNotifications", 1, RegistryValueKind.DWord);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void RestoreMicrosoftAiSlop()
+    {
+        try
+        {
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "ShowCopilotButton", 1, RegistryValueKind.DWord);
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsCopilot", "TurnOffWindowsCopilot", 0, RegistryValueKind.DWord);
+            Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot", "TurnOffWindowsCopilot", 0, RegistryValueKind.DWord);
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Copilot\BingChat", "IsCopilotAvailable", 1, RegistryValueKind.DWord);
+
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsAI", "DisableAIDataAnalysis", 0, RegistryValueKind.DWord);
+            Registry.SetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "DisableAIDataAnalysis", 0, RegistryValueKind.DWord);
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "AllowRecall");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "DisableRecall");
+            RegistryHelper.DeleteValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsAI", "SnapshotAnalysisDisabled");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "SnapshotAnalysisDisabled");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "AllowUserActivityAnalysis");
+
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ClickToDo", "Enabled", 1, RegistryValueKind.DWord);
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "DisableClickToDo");
+
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Search", "BingSearchEnabled", 1, RegistryValueKind.DWord);
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Search", "DeviceHistoryEnabled", 1, RegistryValueKind.DWord);
+            Registry.SetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\SearchSettings", "IsDynamicSearchBoxEnabled", 1, RegistryValueKind.DWord);
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "DisableWebSearch");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "ConnectedSearchUseWeb");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "AllowCloudSearch");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Windows Search", "DisableSearchBoxSuggestions");
+
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Paint", "DisableCocreator");
+            RegistryHelper.DeleteValue(@"HKEY_CURRENT_USER\Software\Microsoft\Paint", "DisableCocreator");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Photos", "DisableGenerativeErase");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Photos", "DisableSuperResolution");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Photos", "DisableAI");
+
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "HubsSidebarEnabled");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "CopilotCDPEnabled");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "ComposeInlineEnabled");
+            RegistryHelper.DeleteValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "EdgeEntSearchPageContext");
+            RegistryHelper.DeleteValue(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Edge", "HubsSidebarEnabled");
+        }
+        catch
+        {
+        }
+    }
+
+    private void UpdateRootClip()
+    {
+        RootGrid.Clip = new RectangleGeometry(new Rect(0, 0, ActualWidth, ActualHeight), 12, 12);
+    }
+
     private async void Scan_Click(object sender, RoutedEventArgs e)
     {
         if (Interlocked.Exchange(ref _cleanupOperationInFlight, 1) != 0)
@@ -1097,7 +1725,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             var result = await Task.Run(() => ScanCleanupTargets(plan));
             CleanupSizeText.Text = result.WarningCount > 0
-                ? $"Estimated size: {FormatBytes(result.TotalBytes)} ({result.WarningCount} skipped)"
+                ? $"Estimated size: {FormatBytes(result.TotalBytes)} ({result.WarningCount} inaccessible items)"
                 : $"Estimated size: {FormatBytes(result.TotalBytes)}";
         }
         catch (Exception ex)
@@ -1131,17 +1759,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             try
             {
-                BoostButton.IsEnabled = false;
                 SetCleanupControlsEnabled(false);
                 CleanupSizeText.Text = "Cleaning selected locations...";
 
                 var result = await Task.Run(() => ExecuteCleanupPlan(plan));
-                
-                string message = result.WarningCount > 0
+
+                string completionMessage = result.WarningCount > 0
                     ? $"Cleanup completed with {result.WarningCount} skipped items."
                     : "System folders cleaned successfully!";
-                System.Windows.MessageBox.Show(message, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+
                 CleanupSizeText.Text = "Estimated size: 0 B";
+                System.Windows.MessageBox.Show(completionMessage, "Success", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -1150,7 +1778,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
             finally
             {
-                BoostButton.IsEnabled = true;
                 SetCleanupControlsEnabled(true);
                 Interlocked.Exchange(ref _cleanupOperationInFlight, 0);
             }
@@ -1164,18 +1791,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             CleanTempCheck.IsChecked == true,
             CleanWinTempCheck.IsChecked == true,
             CleanUpdateCacheCheck.IsChecked == true,
-            CleanRecycleBinCheck.IsChecked == true);
+            CleanRecycleBinCheck.IsChecked == true,
+            CleanBrowserCacheCheck.IsChecked == true,
+            CleanThumbnailsCheck.IsChecked == true,
+            CleanErrorReportingCheck.IsChecked == true,
+            CleanSystemLogsCheck.IsChecked == true);
     }
 
     private void SetCleanupControlsEnabled(bool isEnabled)
     {
         ScanCleanupButton.IsEnabled = isEnabled;
         CleanNowButton.IsEnabled = isEnabled;
+        CleanRamButton.IsEnabled = isEnabled;
         CleanPrefetchCheck.IsEnabled = isEnabled;
         CleanTempCheck.IsEnabled = isEnabled;
         CleanWinTempCheck.IsEnabled = isEnabled;
         CleanUpdateCacheCheck.IsEnabled = isEnabled;
         CleanRecycleBinCheck.IsEnabled = isEnabled;
+        CleanBrowserCacheCheck.IsEnabled = isEnabled;
+        CleanThumbnailsCheck.IsEnabled = isEnabled;
+        CleanErrorReportingCheck.IsEnabled = isEnabled;
+        CleanSystemLogsCheck.IsEnabled = isEnabled;
     }
 
     private static CleanupExecutionResult ScanCleanupTargets(CleanupPlan plan)
@@ -1188,6 +1824,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (plan.CleanWindowsTemp) totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(@"C:\Windows\Temp", ref warningCount));
         if (plan.CleanUpdateCache) totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(@"C:\Windows\SoftwareDistribution\Download", ref warningCount));
         if (plan.CleanRecycleBin) totalBytes = SafeAddBytes(totalBytes, EstimateRecycleBinSize(ref warningCount));
+
+        if (plan.CleanBrowserCache)
+        {
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(Path.Combine(localApp, @"Google\Chrome\User Data\Default\Cache"), ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(Path.Combine(localApp, @"Microsoft\Edge\User Data\Default\Cache"), ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(Path.Combine(localApp, @"BraveSoftware\Brave-Browser\User Data\Default\Cache"), ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(Path.Combine(localApp, @"Opera Software\Opera Stable\Cache"), ref warningCount));
+        }
+
+        if (plan.CleanThumbnails)
+        {
+            string explorerPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\Windows\Explorer");
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectoryFilesMatching(explorerPath, "thumbcache_*.db", ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectoryFilesMatching(explorerPath, "iconcache_*.db", ref warningCount));
+        }
+
+        if (plan.CleanErrorReporting)
+        {
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(Path.Combine(localApp, "CrashDumps"), ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(@"C:\ProgramData\Microsoft\Windows\WER", ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(@"C:\Windows\Minidump", ref warningCount));
+        }
+
+        if (plan.CleanSystemLogs)
+        {
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(@"C:\Windows\Logs\CBS", ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(@"C:\Windows\Logs\DISM", ref warningCount));
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(@"C:\Windows\Panther", ref warningCount));
+        }
 
         return new CleanupExecutionResult(totalBytes, warningCount);
     }
@@ -1202,7 +1869,68 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (plan.CleanUpdateCache) ClearDirectory(@"C:\Windows\SoftwareDistribution\Download", ref warningCount);
         if (plan.CleanRecycleBin) EmptyRecycleBin(ref warningCount);
 
+        if (plan.CleanBrowserCache)
+        {
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            ClearDirectory(Path.Combine(localApp, @"Google\Chrome\User Data\Default\Cache"), ref warningCount);
+            ClearDirectory(Path.Combine(localApp, @"Microsoft\Edge\User Data\Default\Cache"), ref warningCount);
+            ClearDirectory(Path.Combine(localApp, @"BraveSoftware\Brave-Browser\User Data\Default\Cache"), ref warningCount);
+            ClearDirectory(Path.Combine(localApp, @"Opera Software\Opera Stable\Cache"), ref warningCount);
+        }
+
+        if (plan.CleanThumbnails)
+        {
+            string explorerPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\Windows\Explorer");
+            DeleteMatchingFiles(explorerPath, "thumbcache_*.db", ref warningCount);
+            DeleteMatchingFiles(explorerPath, "iconcache_*.db", ref warningCount);
+        }
+
+        if (plan.CleanErrorReporting)
+        {
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            ClearDirectory(Path.Combine(localApp, "CrashDumps"), ref warningCount);
+            ClearDirectory(@"C:\ProgramData\Microsoft\Windows\WER", ref warningCount);
+            ClearDirectory(@"C:\Windows\Minidump", ref warningCount);
+        }
+
+        if (plan.CleanSystemLogs)
+        {
+            ClearDirectory(@"C:\Windows\Logs\CBS", ref warningCount);
+            ClearDirectory(@"C:\Windows\Logs\DISM", ref warningCount);
+            ClearDirectory(@"C:\Windows\Panther", ref warningCount);
+        }
+
         return new CleanupExecutionResult(0, warningCount);
+    }
+
+    private static long MeasureDirectoryFilesMatching(string path, string pattern, ref int warningCount)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return 0;
+        long total = 0;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(path, pattern))
+            {
+                try { total = SafeAddBytes(total, new FileInfo(file).Length); }
+                catch { warningCount++; }
+            }
+        }
+        catch { warningCount++; }
+        return total;
+    }
+
+    private static void DeleteMatchingFiles(string path, string pattern, ref int warningCount)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(path, pattern))
+            {
+                try { File.Delete(file); }
+                catch { warningCount++; }
+            }
+        }
+        catch { warningCount++; }
     }
 
     private static long MeasureDirectorySize(string path, ref int warningCount)
@@ -1302,7 +2030,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     }
                     else
                     {
-                        File.SetAttributes(entry, FileAttributes.Normal);
                         File.Delete(entry);
                     }
                 }
@@ -1315,14 +2042,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         for (int i = visitedDirectories.Count - 1; i >= 0; i--)
         {
-            if (string.Equals(visitedDirectories[i], path, StringComparison.OrdinalIgnoreCase))
+            string directory = visitedDirectories[i];
+            if (string.Equals(directory, path, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
             try
             {
-                Directory.Delete(visitedDirectories[i], recursive: false);
+                Directory.Delete(directory, false);
             }
             catch
             {
@@ -1331,69 +2059,95 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private static long EstimateRecycleBinSize(ref int warningCount)
+    private static void EmptyRecycleBin(ref int warningCount)
     {
-        long totalBytes = 0;
-        string systemDrive = Path.GetPathRoot(Environment.SystemDirectory) ?? @"C:\";
-        string recycleBinPath = Path.Combine(systemDrive, "$Recycle.Bin");
         try
         {
-            totalBytes = MeasureDirectorySize(recycleBinPath, ref warningCount);
+            int hResult = SHEmptyRecycleBin(IntPtr.Zero, null, RecycleBinNoConfirmation | RecycleBinNoProgressUi | RecycleBinNoSound);
+            if (hResult != 0)
+            {
+                warningCount++;
+            }
         }
         catch
         {
             warningCount++;
+        }
+    }
+
+    private static long EstimateRecycleBinSize(ref int warningCount)
+    {
+        long totalBytes = 0;
+        DriveInfo[] drives;
+
+        try
+        {
+            drives = DriveInfo.GetDrives();
+        }
+        catch
+        {
+            warningCount++;
+            return 0;
+        }
+
+        foreach (var drive in drives.Where(d => d.IsReady && d.DriveType == DriveType.Fixed))
+        {
+            string recyclePath = Path.Combine(drive.RootDirectory.FullName, "$Recycle.Bin");
+            totalBytes = SafeAddBytes(totalBytes, MeasureDirectorySize(recyclePath, ref warningCount));
         }
 
         return totalBytes;
     }
 
-    private static long SafeAddBytes(long totalBytes, long value)
+    private static long SafeAddBytes(long left, long right)
     {
-        if (value <= 0)
+        try
         {
-            return totalBytes;
+            return checked(left + right);
         }
-
-        long remaining = long.MaxValue - totalBytes;
-        return value > remaining ? long.MaxValue : totalBytes + value;
+        catch (OverflowException)
+        {
+            return long.MaxValue;
+        }
     }
 
     private static string FormatBytes(long bytes)
     {
-        string[] suffixes = ["B", "KB", "MB", "GB", "TB"];
-        double value = bytes;
-        int suffixIndex = 0;
-        while (value >= 1024 && suffixIndex < suffixes.Length - 1)
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double size = bytes;
+        int unitIndex = 0;
+
+        while (size >= 1024 && unitIndex < units.Length - 1)
         {
-            value /= 1024;
-            suffixIndex++;
+            size /= 1024;
+            unitIndex++;
         }
 
-        return $"{value:0.#} {suffixes[suffixIndex]}";
-    }
-
-    private static void EmptyRecycleBin(ref int warningCount)
-    {
-        try
-        {
-            SHEmptyRecycleBin(IntPtr.Zero, null, RecycleBinNoConfirmation | RecycleBinNoProgressUi | RecycleBinNoSound);
-        }
-        catch
-        {
-            warningCount++;
-        }
+        return $"{size:0.##} {units[unitIndex]}";
     }
 
     private readonly struct CleanupPlan
     {
-        public CleanupPlan(bool cleanPrefetch, bool cleanTemp, bool cleanWindowsTemp, bool cleanUpdateCache, bool cleanRecycleBin)
+        public CleanupPlan(
+            bool cleanPrefetch,
+            bool cleanTemp,
+            bool cleanWindowsTemp,
+            bool cleanUpdateCache,
+            bool cleanRecycleBin,
+            bool cleanBrowserCache,
+            bool cleanThumbnails,
+            bool cleanErrorReporting,
+            bool cleanSystemLogs)
         {
             CleanPrefetch = cleanPrefetch;
             CleanTemp = cleanTemp;
             CleanWindowsTemp = cleanWindowsTemp;
             CleanUpdateCache = cleanUpdateCache;
             CleanRecycleBin = cleanRecycleBin;
+            CleanBrowserCache = cleanBrowserCache;
+            CleanThumbnails = cleanThumbnails;
+            CleanErrorReporting = cleanErrorReporting;
+            CleanSystemLogs = cleanSystemLogs;
         }
 
         public bool CleanPrefetch { get; }
@@ -1401,7 +2155,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         public bool CleanWindowsTemp { get; }
         public bool CleanUpdateCache { get; }
         public bool CleanRecycleBin { get; }
-        public bool HasSelections => CleanPrefetch || CleanTemp || CleanWindowsTemp || CleanUpdateCache || CleanRecycleBin;
+        public bool CleanBrowserCache { get; }
+        public bool CleanThumbnails { get; }
+        public bool CleanErrorReporting { get; }
+        public bool CleanSystemLogs { get; }
+
+        public bool HasSelections => CleanPrefetch || CleanTemp || CleanWindowsTemp || CleanUpdateCache || CleanRecycleBin
+            || CleanBrowserCache || CleanThumbnails || CleanErrorReporting || CleanSystemLogs;
     }
 
     private readonly struct CleanupExecutionResult

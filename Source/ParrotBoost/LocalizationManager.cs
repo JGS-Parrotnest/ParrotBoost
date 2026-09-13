@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
@@ -14,6 +13,8 @@ public class LocalizationManager
     public static LocalizationManager Instance => _instance ??= new LocalizationManager();
 
     private Dictionary<string, object>? _currentLocalization;
+
+    public string this[string key] => GetString(key);
 
     public void SetLanguage(string languageCode)
     {
@@ -35,7 +36,6 @@ public class LocalizationManager
                 }
                 else
                 {
-                    // Fallback to default if not found
                     if (languageCode != "en-US") SetLanguage("en-US");
                 }
             }

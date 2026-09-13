@@ -78,9 +78,6 @@ internal sealed class GpuDriverUpdateService
 
     private static async Task<string?> GetLatestVersionAsync(string manufacturer)
     {
-        // W rzeczywistej implementacji tutaj byłyby zapytania do API producentów.
-        // Ze względu na brak publicznych, prostych API bez kluczy, używamy endpointów symulujących lub statycznych list.
-        
         return manufacturer switch
         {
             "NVIDIA" => await FetchNvidiaLatest(),

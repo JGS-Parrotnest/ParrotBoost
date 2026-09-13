@@ -1,35 +1,88 @@
-END USER LICENSE AGREEMENT (EULA) ParrotBoost
+END USER LICENSE AGREEMENT (EULA)
+ParrotBoost v3.0.1 — by JGS
+Copyright © 2026 JGS. All rights reserved.
 
-This End User License Agreement (hereinafter: the "Agreement") is a legal agreement between you (an individual or legal entity, hereinafter: the "User") and JGS (hereinafter: the "Licensor") regarding the ParrotBoost software (hereinafter: the "Software").
+This End User License Agreement ("Agreement") is a legal agreement between you ("User") and JGS ("Licensor") for the use of ParrotBoost ("Software") — a Windows system optimization and performance enhancement tool. By installing, running, or using ParrotBoost, you agree to be bound by the terms of this Agreement.
 
-1. SCOPE OF LICENSE
+────────────────────────────────────────────────────────────────
 
-The Licensor grants the User a non-exclusive, non-transferable, and limited license to use the Software in accordance with its intended purpose, solely for personal use or internal business purposes.
+1. GRANT OF LICENSE
 
-2. USAGE RESTRICTIONS
+JGS grants you a personal, non-exclusive, non-transferable, limited license to install and use ParrotBoost solely on computers that you own or control, for personal or internal business purposes. The full source code of ParrotBoost is made available on GitHub for transparency and inspection.
 
-The User agrees not to:
+────────────────────────────────────────────────────────────────
 
-Copy, modify, or create derivative works based on the Software, except as permitted by law.
-Decompile, disassemble, or reverse engineer the Software.
-Rent, lease, sell, or otherwise make the Software available to third parties.
-Remove or alter any copyright or trademark notices of the Licensor.
-3. PRIVACY POLICY
+2. PERMITTED USE
 
-The ParrotBoost Software may collect anonymous technical data related to system performance (CPU, GPU, temperatures) for the purpose of optimizing its operation. This data is not linked to the User’s identity and is not shared with third parties for marketing purposes.
+You may:
+- Install and run ParrotBoost on your personal or work computer.
+- Use the Turbo Parrot Power Plan, system cleaning tools, service optimizer, and all other built-in features.
+- Inspect, build, or modify the source code for personal, non-commercial purposes.
+- Distribute unmodified copies of the Software, provided this EULA is included.
 
-4. DISCLAIMER OF LIABILITY
+────────────────────────────────────────────────────────────────
 
-THE SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY WARRANTIES, EXPRESS OR IMPLIED. THE LICENSOR SHALL NOT BE LIABLE FOR ANY DAMAGES (INCLUDING DIRECT, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES) ARISING FROM THE USE OR INABILITY TO USE THE SOFTWARE.
+3. RESTRICTIONS
 
-5. INTELLECTUAL PROPERTY RIGHTS
+You may NOT:
+- Sell, rent, sublicense, or redistribute ParrotBoost (modified or unmodified) for commercial gain.
+- Claim authorship of ParrotBoost or present it as your own product.
+- Remove or alter the JGS branding, version information, or copyright notices displayed in the application.
+- Use ParrotBoost to deliberately harm, damage, or destabilize third-party systems.
 
-All rights, title, and interest in and to the Software, including all copyrights and other intellectual property rights related thereto, are the exclusive property of the Licensor and are protected by Polish copyright law and international intellectual property treaties.
+────────────────────────────────────────────────────────────────
 
-6. TERMINATION
+4. SYSTEM MODIFICATIONS & DISCLAIMER
 
-This Agreement remains in effect until terminated. The license shall automatically terminate if the User breaches any of the provisions of this Agreement. Upon termination, the User must cease all use of the Software and delete all copies of it.
+ParrotBoost interacts directly with Windows system components, including but not limited to:
+- Windows power plans (applies the "Turbo Parrot Power Plan")
+- Windows services and scheduled tasks (disables selected background bloatware)
+- Windows Delivery Optimization and telemetry tasks (Privacy & Microsoft Resource Guard)
+- Browser cache directories (Chrome, Edge, Firefox, Brave, Opera)
+- System temporary files, thumbnail databases, and Windows Error Reporting dumps
+- RAM (via the built-in RAM Cleaner feature)
 
-7. FINAL PROVISIONS
+THE SOFTWARE IS PROVIDED "AS IS," WITHOUT ANY WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. JGS SHALL NOT BE HELD RESPONSIBLE FOR ANY DATA LOSS, SYSTEM INSTABILITY, PERFORMANCE DEGRADATION, OR ANY OTHER DAMAGE RESULTING FROM THE USE OR MISUSE OF PARROTBOOST. IT IS YOUR RESPONSIBILITY TO ENSURE YOUR SYSTEM IS BACKED UP BEFORE APPLYING SYSTEM-LEVEL OPTIMIZATIONS.
 
-In matters not regulated by this Agreement, the provisions of Polish law shall apply, in particular the Copyright and Related Rights Act and the Civil Code. Any disputes arising from this Agreement shall be resolved by the court having jurisdiction over the registered office of the Licensor.
+────────────────────────────────────────────────────────────────
+
+5. HARDWARE MONITORING & PERFORMANCE DATA
+
+ParrotBoost uses LibreHardwareMonitor and native Win32 APIs to read CPU, GPU, RAM, and disk metrics in real time. This data is processed locally on your machine and is used exclusively to display live performance statistics within the application. No performance data, hardware identifiers, or personal information is transmitted to JGS or any third party.
+
+────────────────────────────────────────────────────────────────
+
+6. AUTO-UPDATE FEATURE
+
+ParrotBoost may check for new releases on GitHub upon startup. This check involves a single HTTPS request to the GitHub Releases API to compare the installed version (3.0.1) with the latest available release. No personal data is sent. Updates are applied using an Inno Setup elevated installer, which requires administrator privileges. You may disable this feature in the application settings.
+
+────────────────────────────────────────────────────────────────
+
+7. INTELLECTUAL PROPERTY
+
+All rights, title, and interest in and to ParrotBoost — including its name, logo, "Turbo Parrot Power Plan" branding, compiled binaries, and associated assets — are the exclusive property of JGS and are protected under Polish copyright law and applicable international intellectual property treaties.
+
+────────────────────────────────────────────────────────────────
+
+8. TERMINATION
+
+This license is effective until terminated. JGS reserves the right to terminate this Agreement if you breach any of its terms. Upon termination, you must immediately cease all use of ParrotBoost and remove all copies from your devices.
+
+────────────────────────────────────────────────────────────────
+
+9. GOVERNING LAW & DISPUTES
+
+This Agreement shall be governed by and construed in accordance with the laws of the Republic of Poland, in particular the Act on Copyright and Related Rights (Ustawa o prawie autorskim i prawach pokrewnych) and the Polish Civil Code (Kodeks cywilny). Any disputes arising from or in connection with this Agreement shall be subject to the exclusive jurisdiction of the courts competent for the registered office of JGS.
+
+────────────────────────────────────────────────────────────────
+
+10. CONTACT
+
+Publisher: JGS
+Product: ParrotBoost v3.0.1 Stable
+Source Code: https://github.com/JGS/ParrotBoost (or as linked in the application)
+Support: via GitHub Issues
+
+By using ParrotBoost, you acknowledge that you have read, understood, and agreed to this End User License Agreement.
+
+© 2026 JGS — Unleash Your PC's Potential. 🦜⚡

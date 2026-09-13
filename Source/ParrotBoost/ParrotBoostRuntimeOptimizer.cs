@@ -44,10 +44,10 @@ internal sealed class ParrotBoostRuntimeOptimizer
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
 
-    private readonly PidController _tempPid = new(0.5, 0.1, 0.05); // Dostrojone Kp, Ki, Kd
+    private readonly PidController _tempPid = new(0.5, 0.1, 0.05);
     private float _lastCpuTemp;
     private float _lastGpuTemp;
-    private const float MaxTempJumpFactor = 0.7f; // 30% redukcja skoku
+    private const float MaxTempJumpFactor = 0.7f;
     private const float CriticalTempThreshold = 95.0f;
 
     public ParrotBoostRuntimeOptimizer()
@@ -77,7 +77,6 @@ internal sealed class ParrotBoostRuntimeOptimizer
         {
             bool boostEnabled = ParrotBoostSystemConfiguration.IsBoostEnabled();
             
-            // Safety Check
             if ((cpuTemp ?? 0) > CriticalTempThreshold || (gpuTemp ?? 0) > CriticalTempThreshold)
             {
                 Logger.Warn("Critical temperature detected! Throttling boost. CPU: {0:F1}°C, GPU: {1:F1}°C", cpuTemp, gpuTemp);
@@ -92,20 +91,16 @@ internal sealed class ParrotBoostRuntimeOptimizer
                 currentPriority = AdjustProcessPriority(cpuLoad);
                 OptimizeSystemResources();
                 
-                // PID control based on CPU Temp (Target 75C)
                 double pidAdjustment = _tempPid.Compute(75.0, cpuTemp ?? 0);
                 if (pidAdjustment < 0) 
                 {
-                    // If PID output is negative, we should scale back optimization
                     Logger.Debug("PID Adjustment: {0:F2}. Throttling resources.", pidAdjustment);
                 }
             }
 
-            // Calibrate/Smooth temperatures with 30% jump reduction
             float calibratedCpuTemp = cpuTemp.HasValue ? CalibrateTemp(cpuTemp.Value, ref _lastCpuTemp) : 0;
             float calibratedGpuTemp = gpuTemp.HasValue ? CalibrateTemp(gpuTemp.Value, ref _lastGpuTemp) : 0;
 
-            // Detailed Logging (0.1C precision, ms precision)
             Logger.Trace("[{0:yyyy-MM-dd HH:mm:ss.fff}] Optimization Sampling: CPU={1:F1}C, GPU={2:F1}C, Load_C={3:F1}%, Load_G={4:F1}%", 
                 DateTime.Now, calibratedCpuTemp, calibratedGpuTemp, cpuLoad, gpuLoad);
 
@@ -139,7 +134,6 @@ internal sealed class ParrotBoostRuntimeOptimizer
         if (last <= 0) { last = current; return current; }
         
         float diff = current - last;
-        // Limit the jump by 30%
         float adjustedDiff = diff * MaxTempJumpFactor;
         float result = last + adjustedDiff;
         
@@ -227,8 +221,6 @@ internal sealed class ParrotBoostRuntimeOptimizer
                 }
             }
 
-            // High Performance: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-            // Balanced: 381b4222-f694-41f0-9685-ff5bb260df2e
             string scheme = highPerformance ? "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c" : "381b4222-f694-41f0-9685-ff5bb260df2e";
             
             ProcessStartInfo psi = new("powercfg", $"/setactive {scheme}")
@@ -456,7 +448,6 @@ internal sealed class ParrotBoostRuntimeOptimizer
         }
     }
 
-    // --- Diagnostic Suite (Migrated from Tests) ---
     public static void RunSelfDiagnostics()
     {
         Logger.Info("Starting Production Self-Diagnostics...");

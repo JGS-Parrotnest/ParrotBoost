@@ -17,10 +17,10 @@
     <Description>System Performance Optimization Tool</Description>
     <Copyright>Copyright © 2026 JGS</Copyright>
     <AssemblyTitle>ParrotBoost</AssemblyTitle>
-    <Version>1.2.6</Version>
-    <AssemblyVersion>1.2.6.0</AssemblyVersion>
-    <FileVersion>1.2.6.0</FileVersion>
-    <InformationalVersion>1.2.6 Stable</InformationalVersion>
+    <Version>3.0.1</Version>
+    <AssemblyVersion>3.0.1.0</AssemblyVersion>
+    <FileVersion>3.0.1.0</FileVersion>
+    <InformationalVersion>3.0.1 Stable</InformationalVersion>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <Platforms>x64</Platforms>
@@ -43,7 +43,7 @@
 
   <ItemGroup>
     <PackageReference Include="NLog.Config" Version="4.7.15" />
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.5-pre509" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.3" />
     <PackageReference Include="System.Management" Version="9.0.10" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.0" />
     <PackageReference Include="System.Net.Http" Version="4.3.4" Condition="'$(TargetFramework)' == 'net472'" />

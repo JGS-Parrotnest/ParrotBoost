@@ -88,18 +88,24 @@ internal sealed class TemperatureSnapshot
         DateTimeOffset capturedAtUtc,
         IReadOnlyList<TemperatureSensorReading> cpuSensors,
         IReadOnlyList<TemperatureSensorReading> gpuSensors,
-        IReadOnlyList<string> errors)
+        IReadOnlyList<string> errors,
+        float? cpuLoad = null,
+        float? gpuLoad = null)
     {
         CapturedAtUtc = capturedAtUtc;
         CpuSensors = cpuSensors;
         GpuSensors = gpuSensors;
         Errors = errors;
+        CpuLoad = cpuLoad;
+        GpuLoad = gpuLoad;
     }
 
     public DateTimeOffset CapturedAtUtc { get; }
     public IReadOnlyList<TemperatureSensorReading> CpuSensors { get; }
     public IReadOnlyList<TemperatureSensorReading> GpuSensors { get; }
     public IReadOnlyList<string> Errors { get; }
+    public float? CpuLoad { get; }
+    public float? GpuLoad { get; }
     public bool HasErrors => Errors.Count > 0;
 }
 
@@ -138,6 +144,8 @@ internal sealed class TemperatureProviderReadResult
 {
     public IReadOnlyList<TemperatureSensorReading> Readings { get; init; } = [];
     public IReadOnlyList<string> Errors { get; init; } = [];
+    public float? CpuLoad { get; init; }
+    public float? GpuLoad { get; init; }
 }
 
 internal interface ITemperatureProvider : IDisposable
@@ -196,10 +204,26 @@ internal sealed class TemperatureMonitoringModule : IDisposable
 
     public event Action<CriticalTemperatureEvent>? CriticalTemperatureDetected;
 
+    public void SetPollingInterval(TimeSpan interval)
+    {
+        lock (_syncRoot)
+        {
+            if (!_disposed)
+            {
+                TimeSpan normalized = interval < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : interval;
+                _pollTimer.Change(normalized, normalized);
+            }
+        }
+    }
+
     public TemperatureSnapshot GetCurrentTemperatures()
     {
         lock (_syncRoot)
         {
+            if (_currentSnapshot == TemperatureSnapshot.Empty && !_disposed)
+            {
+                PollNow();
+            }
             return _currentSnapshot;
         }
     }
@@ -260,7 +284,7 @@ internal sealed class TemperatureMonitoringModule : IDisposable
 
             var cpuSensors = providerResult.Readings.Where(r => r.IsCpu).ToArray();
             var gpuSensors = providerResult.Readings.Where(r => r.IsGpu).ToArray();
-            var snapshot = new TemperatureSnapshot(timestampUtc, cpuSensors, gpuSensors, providerResult.Errors.ToArray());
+            var snapshot = new TemperatureSnapshot(timestampUtc, cpuSensors, gpuSensors, providerResult.Errors.ToArray(), providerResult.CpuLoad, providerResult.GpuLoad);
 
             List<CriticalTemperatureEvent> newEvents = [];
 
@@ -446,7 +470,9 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
         _computer = new Computer
         {
             IsCpuEnabled = true,
-            IsGpuEnabled = true
+            IsGpuEnabled = true,
+            IsMotherboardEnabled = true,
+            IsControllerEnabled = true
         };
     }
 
@@ -457,12 +483,15 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
         EnsureOpen();
 
         List<TemperatureSensorReading> readings = [];
+        float? cpuLoad = null;
+        float? gpuLoad = null;
+
         foreach (var hardware in _computer.Hardware)
         {
-            CollectHardware(hardware, timestampUtc, readings);
+            CollectHardware(hardware, timestampUtc, readings, ref cpuLoad, ref gpuLoad);
         }
 
-        if (readings.Count == 0)
+        if (readings.Count == 0 && !cpuLoad.HasValue && !gpuLoad.HasValue)
         {
             string message = IsElevated()
                 ? "No temperature sensors were reported by LibreHardwareMonitor."
@@ -470,22 +499,49 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
             return new TemperatureProviderReadResult { Errors = [message] };
         }
 
-        return new TemperatureProviderReadResult { Readings = readings };
+        return new TemperatureProviderReadResult { Readings = readings, CpuLoad = cpuLoad, GpuLoad = gpuLoad };
     }
 
-    private void CollectHardware(IHardware hardware, DateTimeOffset timestampUtc, List<TemperatureSensorReading> readings)
+    private void CollectHardware(IHardware hardware, DateTimeOffset timestampUtc, List<TemperatureSensorReading> readings, ref float? cpuLoad, ref float? gpuLoad)
     {
         hardware.Update();
-        AppendSensors(hardware, timestampUtc, readings);
+        AppendSensors(hardware, timestampUtc, readings, ref cpuLoad, ref gpuLoad);
 
         foreach (var subHardware in hardware.SubHardware)
         {
-            CollectHardware(subHardware, timestampUtc, readings);
+            CollectHardware(subHardware, timestampUtc, readings, ref cpuLoad, ref gpuLoad);
         }
     }
 
-    private static void AppendSensors(IHardware hardware, DateTimeOffset timestampUtc, List<TemperatureSensorReading> readings)
+    private static void AppendSensors(IHardware hardware, DateTimeOffset timestampUtc, List<TemperatureSensorReading> readings, ref float? cpuLoad, ref float? gpuLoad)
     {
+        if (hardware.HardwareType == HardwareType.Cpu)
+        {
+            foreach (var sensor in hardware.Sensors)
+            {
+                if (sensor.SensorType == SensorType.Load && sensor.Value.HasValue)
+                {
+                    if (sensor.Name.Equals("CPU Total", StringComparison.OrdinalIgnoreCase) || sensor.Name.Equals("Total", StringComparison.OrdinalIgnoreCase))
+                    {
+                        cpuLoad = sensor.Value.Value;
+                    }
+                }
+            }
+        }
+        else if (hardware.HardwareType == HardwareType.GpuNvidia || hardware.HardwareType == HardwareType.GpuAmd || hardware.HardwareType == HardwareType.GpuIntel)
+        {
+            var coreSensor = hardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Load && s.Value.HasValue && s.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase))
+                ?? hardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Load && s.Value.HasValue && s.Name.Equals("D3D 3D", StringComparison.OrdinalIgnoreCase))
+                ?? hardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Load && s.Value.HasValue && s.Name.Equals("GPU", StringComparison.OrdinalIgnoreCase))
+                ?? hardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Load && s.Value.HasValue && (s.Name.Contains("Core", StringComparison.OrdinalIgnoreCase) || s.Name.Contains("3D", StringComparison.OrdinalIgnoreCase)) && !s.Name.Contains("Power", StringComparison.OrdinalIgnoreCase) && !s.Name.Contains("Board", StringComparison.OrdinalIgnoreCase) && !s.Name.Contains("Memory", StringComparison.OrdinalIgnoreCase) && !s.Name.Contains("Bus", StringComparison.OrdinalIgnoreCase) && !s.Name.Contains("Video", StringComparison.OrdinalIgnoreCase) && !s.Name.Contains("Copy", StringComparison.OrdinalIgnoreCase));
+
+            if (coreSensor != null && coreSensor.Value.HasValue)
+            {
+                float thisLoad = coreSensor.Value.Value;
+                gpuLoad = gpuLoad.HasValue ? Math.Max(gpuLoad.Value, thisLoad) : thisLoad;
+            }
+        }
+
         if (!IsTemperatureCapableHardware(hardware.HardwareType))
         {
             return;
@@ -520,6 +576,7 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
     private static bool IsTemperatureCapableHardware(HardwareType hardwareType)
     {
         return hardwareType == HardwareType.Cpu
+            || hardwareType == HardwareType.Motherboard
             || hardwareType == HardwareType.GpuNvidia
             || hardwareType == HardwareType.GpuAmd
             || hardwareType == HardwareType.GpuIntel;
@@ -535,6 +592,16 @@ internal sealed class WindowsTemperatureProvider : ITemperatureProvider
             }
 
             return TemperatureOrigin.CpuPackage;
+        }
+
+        if (hardwareType == HardwareType.Motherboard)
+        {
+            if (sensorName.Contains("CPU", StringComparison.OrdinalIgnoreCase))
+            {
+                return TemperatureOrigin.CpuPackage;
+            }
+
+            return null;
         }
 
         return TemperatureOrigin.GpuCore;
