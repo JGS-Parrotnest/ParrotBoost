@@ -3,11 +3,11 @@
 
   <br />
 
-  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&size=28&pause=1000&color=FF9F1C&center=true&vCenter=true&width=600&lines=🚀+ParrotBoost+v3.0.1;🔥+Turbo+Parrot+Power+Plan;🛠️+Built+by+JGS;🦜+Unleash+Your+PC's+Potential" alt="ParrotBoost Title" />
+  <img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&size=28&pause=1000&color=FF9F1C&center=true&vCenter=true&width=600&lines=🚀+ParrotBoost+v3.0.2;🔥+Turbo+Parrot+Power+Plan;🛠️+Built+by+JGS;🦜+Unleash+Your+PC's+Potential" alt="ParrotBoost Title" />
 
   <br />
 
-  <img src="https://img.shields.io/badge/Version-3.0.1_Stable-brightgreen?style=for-the-badge" alt="Version" />
+  <img src="https://img.shields.io/badge/Version-3.0.2_Stable-brightgreen?style=for-the-badge" alt="Version" />
   <img src="https://img.shields.io/badge/OS-Windows_10_%2F_11-blue?style=for-the-badge" alt="Platform" />
   <img src="https://img.shields.io/badge/.NET-11-blueviolet?style=for-the-badge" alt=".NET 11" />
   <img src="https://img.shields.io/badge/C%23-15-blue?style=for-the-badge" alt="C# 15" />
@@ -17,7 +17,7 @@
 
 **ParrotBoost** is a powerful optimization tool designed specifically for **Windows 10 and 11**. Our goal is simple: to make your computer run faster, smoother, and more efficiently. Whether you are a gamer looking for every single FPS or a power user needing a responsive system, ParrotBoost has you covered.
 
-### Key Features (v3.0.1):
+### Key Features (v3.0.2):
 
 - **Zero-Footprint Telemetry:** Re-engineered CPU/GPU metric monitoring based on native Win32 APIs and LibreHardwareMonitor. 0-1% idle CPU consumption.
 - **Privacy & Microsoft Resource Guard:** Stops Windows Delivery Optimization from using your PC and network bandwidth to upload updates to other computers (P2P WUDO upload blocked). Disables background Microsoft Compatibility Appraiser and telemetry scheduled tasks.
@@ -31,7 +31,7 @@
 <div align="center">
   <img src="Image/app.png" alt="ParrotBoost App Screenshot" width="820" />
   <br />
-  <sub><i>ParrotBoost v3.0.1 — Main Dashboard</i></sub>
+  <sub><i>ParrotBoost v3.0.2 — Main Dashboard</i></sub>
 </div>
 
 ---

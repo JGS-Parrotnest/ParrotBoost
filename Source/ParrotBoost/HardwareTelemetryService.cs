@@ -220,32 +220,53 @@ internal sealed class HardwareTelemetryService : IDisposable
         return 10;
     }
 
+    private static bool _thermalZoneUnavailable;
+
     private float? TryGetFallbackCpuTemperature()
     {
-        if (TryGetCachedValue("FallbackCpuTemp", TimeSpan.FromSeconds(2), out float cached))
+        if (TryGetCachedValue("FallbackCpuTemp", TimeSpan.FromSeconds(3), out float cached))
         {
             return cached;
         }
 
-        try
+        if (!_thermalZoneUnavailable)
         {
-            var cat = new PerformanceCounterCategory("Thermal Zone Information");
-            foreach (var inst in cat.GetInstanceNames())
+            try
             {
-                if (inst.Contains("TZ00", StringComparison.OrdinalIgnoreCase)) continue;
-                using var pc = new PerformanceCounter("Thermal Zone Information", "Temperature", inst);
-                float valK = pc.NextValue();
-                if (Math.Abs(valK - 301.0f) < 0.6f) continue;
-                float valC = valK - 273.15f;
-                if (valC > 15 && valC < 115 && Math.Abs(valC - 27.85f) > 0.6f)
+                if (PerformanceCounterCategory.Exists("Thermal Zone Information"))
                 {
-                    SetCachedValue("FallbackCpuTemp", valC);
-                    return valC;
+                    var cat = new PerformanceCounterCategory("Thermal Zone Information");
+                    var instances = cat.GetInstanceNames();
+                    if (instances.Length == 0)
+                    {
+                        _thermalZoneUnavailable = true;
+                    }
+                    else
+                    {
+                        foreach (var inst in instances)
+                        {
+                            if (inst.Contains("TZ00", StringComparison.OrdinalIgnoreCase)) continue;
+                            using var pc = new PerformanceCounter("Thermal Zone Information", "Temperature", inst);
+                            float valK = pc.NextValue();
+                            if (Math.Abs(valK - 301.0f) < 0.6f) continue;
+                            float valC = valK - 273.15f;
+                            if (valC > 15 && valC < 115 && Math.Abs(valC - 27.85f) > 0.6f)
+                            {
+                                SetCachedValue("FallbackCpuTemp", valC);
+                                return valC;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    _thermalZoneUnavailable = true;
                 }
             }
-        }
-        catch
-        {
+            catch
+            {
+                _thermalZoneUnavailable = true;
+            }
         }
 
         float? coreTemp = TryGetCoreTempSharedMemory();

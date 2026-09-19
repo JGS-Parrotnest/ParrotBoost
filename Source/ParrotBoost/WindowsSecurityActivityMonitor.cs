@@ -59,22 +59,7 @@ internal sealed class WindowsSecurityActivityMonitor
     {
         try
         {
-            return Process.GetProcessesByName("MsMpEng")
-                .Aggregate(TimeSpan.Zero, (total, process) =>
-                {
-                    try
-                    {
-                        return total + process.TotalProcessorTime;
-                    }
-                    catch
-                    {
-                        return total;
-                    }
-                    finally
-                    {
-                        process.Dispose();
-                    }
-                });
+            return AntimalwareService.GetMsMpEngTotalProcessorTime();
         }
         catch (Exception ex)
         {

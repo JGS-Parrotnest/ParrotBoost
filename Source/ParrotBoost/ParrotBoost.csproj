@@ -17,10 +17,10 @@
     <Description>System Performance Optimization Tool</Description>
     <Copyright>Copyright © 2026 JGS</Copyright>
     <AssemblyTitle>ParrotBoost</AssemblyTitle>
-    <Version>3.0.1</Version>
-    <AssemblyVersion>3.0.1.0</AssemblyVersion>
-    <FileVersion>3.0.1.0</FileVersion>
-    <InformationalVersion>3.0.1 Stable</InformationalVersion>
+    <Version>3.0.2</Version>
+    <AssemblyVersion>3.0.2.0</AssemblyVersion>
+    <FileVersion>3.0.2.0</FileVersion>
+    <InformationalVersion>3.0.2 Stable</InformationalVersion>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <Platforms>x64</Platforms>

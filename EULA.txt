@@ -1,5 +1,5 @@
 END USER LICENSE AGREEMENT (EULA)
-ParrotBoost v3.0.1 — by JGS
+ParrotBoost v3.0.2  by JGS
 Copyright © 2026 JGS. All rights reserved.
 
 This End User License Agreement ("Agreement") is a legal agreement between you ("User") and JGS ("Licensor") for the use of ParrotBoost ("Software") — a Windows system optimization and performance enhancement tool. By installing, running, or using ParrotBoost, you agree to be bound by the terms of this Agreement.
@@ -60,7 +60,7 @@ ParrotBoost may check for new releases on GitHub upon startup. This check involv
 
 7. INTELLECTUAL PROPERTY
 
-All rights, title, and interest in and to ParrotBoost — including its name, logo, "Turbo Parrot Power Plan" branding, compiled binaries, and associated assets — are the exclusive property of JGS and are protected under Polish copyright law and applicable international intellectual property treaties.
+All rights, title, and interest in and to ParrotBoost, including its name, logo, "Turbo Parrot Power Plan" branding, compiled binaries, and associated assets — are the exclusive property of JGS and are protected under Polish copyright law and applicable international intellectual property treaties.
 
 ────────────────────────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ This Agreement shall be governed by and construed in accordance with the laws of
 10. CONTACT
 
 Publisher: JGS
-Product: ParrotBoost v3.0.1 Stable
+Product: ParrotBoost v3.0.2 Stable
 Source Code: https://github.com/JGS/ParrotBoost (or as linked in the application)
 Support: via GitHub Issues
 

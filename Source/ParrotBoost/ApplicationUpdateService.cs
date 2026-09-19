@@ -21,7 +21,7 @@ public sealed class UpdateCheckResult
 public static class ApplicationUpdateService
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
-    public const string CurrentVersion = "3.0.1";
+    public const string CurrentVersion = "3.0.2";
     public const string RepositoryOwner = "JGS-Parrotnest";
     public const string RepositoryName = "ParrotBoost";
     public const string ReleasesPageUrl = "https://github.com/JGS-Parrotnest/ParrotBoost/releases";
